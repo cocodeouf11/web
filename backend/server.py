@@ -94,6 +94,19 @@ async def get_current_admin(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
+async def require_super_admin(user=Depends(get_current_admin)) -> dict:
+    if user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Réservé au super admin")
+    return user
+
+
+def _files_scope(user: dict) -> dict:
+    """Return a Mongo filter that scopes files to the current user (super_admin sees all)."""
+    if user.get("role") == "super_admin":
+        return {}
+    return {"created_by": user["id"]}
+
+
 # ---------- Models ----------
 class LoginInput(BaseModel):
     username: str
@@ -121,6 +134,16 @@ class SignInput(BaseModel):
     signature_data_url: str  # data:image/png;base64,...
 
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
 # ---------- Auth Endpoints ----------
 @api_router.post("/auth/login")
 async def login(payload: LoginInput, response: Response):
@@ -138,7 +161,7 @@ async def login(payload: LoginInput, response: Response):
         max_age=8 * 3600,
         path="/",
     )
-    return {"id": user["id"], "username": user["username"], "role": user.get("role", "admin"), "token": token}
+    return {"id": user["id"], "username": user["username"], "role": user.get("role", "gestionnaire"), "token": token}
 
 
 @api_router.post("/auth/logout")
@@ -172,6 +195,8 @@ async def upload_file(
         "size": len(content),
         "status": "unsigned",
         "access_code": None,
+        "created_by": user["id"],
+        "created_by_username": user["username"],
         "created_at": datetime.now(timezone.utc).isoformat(),
         "signed_at": None,
         "signed_content_b64": None,
@@ -184,13 +209,14 @@ async def upload_file(
         "access_code": None,
         "size": len(content),
         "created_at": doc["created_at"],
+        "created_by_username": user["username"],
     }
 
 
 @api_router.get("/files")
 async def list_files(user=Depends(get_current_admin)):
     cursor = db.files.find(
-        {},
+        _files_scope(user),
         {"_id": 0, "content_b64": 0, "signed_content_b64": 0},
     ).sort("created_at", -1)
     files = await cursor.to_list(1000)
@@ -200,7 +226,7 @@ async def list_files(user=Depends(get_current_admin)):
 @api_router.get("/files/{file_id}")
 async def get_file_meta(file_id: str, user=Depends(get_current_admin)):
     f = await db.files.find_one(
-        {"id": file_id},
+        {"id": file_id, **_files_scope(user)},
         {"_id": 0, "content_b64": 0, "signed_content_b64": 0},
     )
     if not f:
@@ -210,7 +236,7 @@ async def get_file_meta(file_id: str, user=Depends(get_current_admin)):
 
 @api_router.get("/files/{file_id}/download")
 async def download_file(file_id: str, signed: bool = False, user=Depends(get_current_admin)):
-    f = await db.files.find_one({"id": file_id})
+    f = await db.files.find_one({"id": file_id, **_files_scope(user)})
     if not f:
         raise HTTPException(404, "Fichier introuvable")
     content_b64 = f.get("signed_content_b64") if signed and f.get("signed_content_b64") else f["content_b64"]
@@ -219,7 +245,7 @@ async def download_file(file_id: str, signed: bool = False, user=Depends(get_cur
 
 @api_router.delete("/files/{file_id}")
 async def delete_file(file_id: str, user=Depends(get_current_admin)):
-    res = await db.files.delete_one({"id": file_id})
+    res = await db.files.delete_one({"id": file_id, **_files_scope(user)})
     if res.deleted_count == 0:
         raise HTTPException(404, "Fichier introuvable")
     return {"ok": True}
@@ -229,7 +255,10 @@ async def delete_file(file_id: str, user=Depends(get_current_admin)):
 async def update_status(file_id: str, payload: StatusUpdate, user=Depends(get_current_admin)):
     if payload.status not in ("signed", "unsigned"):
         raise HTTPException(400, "Statut invalide")
-    res = await db.files.update_one({"id": file_id}, {"$set": {"status": payload.status}})
+    res = await db.files.update_one(
+        {"id": file_id, **_files_scope(user)},
+        {"$set": {"status": payload.status}},
+    )
     if res.matched_count == 0:
         raise HTTPException(404, "Fichier introuvable")
     return {"ok": True, "status": payload.status}
@@ -237,7 +266,7 @@ async def update_status(file_id: str, payload: StatusUpdate, user=Depends(get_cu
 
 @api_router.post("/files/{file_id}/generate-code")
 async def generate_code(file_id: str, user=Depends(get_current_admin)):
-    f = await db.files.find_one({"id": file_id}, {"_id": 0})
+    f = await db.files.find_one({"id": file_id, **_files_scope(user)}, {"_id": 0})
     if not f:
         raise HTTPException(404, "Fichier introuvable")
     # generate unique code
@@ -364,15 +393,110 @@ async def root():
     return {"message": "Devis Signature API", "ok": True}
 
 
+# ---------- User Management (super_admin only) ----------
+@api_router.get("/users")
+async def list_users(user=Depends(require_super_admin)):
+    cursor = db.users.find(
+        {"role": {"$ne": "super_admin"}},
+        {"_id": 0, "password_hash": 0},
+    ).sort("created_at", -1)
+    users = await cursor.to_list(1000)
+    # attach file count for each user
+    for u in users:
+        u["files_count"] = await db.files.count_documents({"created_by": u["id"]})
+    return users
+
+
+@api_router.post("/users")
+async def create_user(payload: UserCreate, user=Depends(require_super_admin)):
+    username = payload.username.strip().lower()
+    if not username or len(username) < 3:
+        raise HTTPException(400, "Nom d'utilisateur trop court (min 3 caractères)")
+    if not payload.password or len(payload.password) < 6:
+        raise HTTPException(400, "Mot de passe trop court (min 6 caractères)")
+    existing = await db.users.find_one({"username": username})
+    if existing:
+        raise HTTPException(400, "Ce nom d'utilisateur existe déjà")
+    new_id = str(uuid.uuid4())
+    await db.users.insert_one({
+        "id": new_id,
+        "username": username,
+        "password_hash": hash_password(payload.password),
+        "role": "gestionnaire",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"id": new_id, "username": username, "role": "gestionnaire"}
+
+
+@api_router.patch("/users/{user_id}")
+async def update_user(user_id: str, payload: UserUpdate, user=Depends(require_super_admin)):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if target.get("role") == "super_admin":
+        raise HTTPException(403, "Impossible de modifier un super admin")
+    updates = {}
+    if payload.username is not None:
+        new_username = payload.username.strip().lower()
+        if len(new_username) < 3:
+            raise HTTPException(400, "Nom d'utilisateur trop court")
+        if new_username != target["username"]:
+            clash = await db.users.find_one({"username": new_username})
+            if clash:
+                raise HTTPException(400, "Ce nom d'utilisateur existe déjà")
+            updates["username"] = new_username
+    if payload.password is not None and payload.password != "":
+        if len(payload.password) < 6:
+            raise HTTPException(400, "Mot de passe trop court (min 6 caractères)")
+        updates["password_hash"] = hash_password(payload.password)
+    if not updates:
+        return {"ok": True, "updated": False}
+    await db.users.update_one({"id": user_id}, {"$set": updates})
+    # propagate username change to files
+    if "username" in updates:
+        await db.files.update_many(
+            {"created_by": user_id},
+            {"$set": {"created_by_username": updates["username"]}},
+        )
+    return {"ok": True, "updated": True}
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user=Depends(require_super_admin)):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if target.get("role") == "super_admin":
+        raise HTTPException(403, "Impossible de supprimer un super admin")
+    if target["id"] == user["id"]:
+        raise HTTPException(400, "Impossible de se supprimer soi-même")
+    await db.users.delete_one({"id": user_id})
+    # delete files owned by this user
+    await db.files.delete_many({"created_by": user_id})
+    return {"ok": True}
+
+
 # ---------- Startup ----------
 @app.on_event("startup")
 async def on_startup():
     # Indexes
     await db.users.create_index("username", unique=True)
     await db.files.create_index("id", unique=True)
-    await db.files.create_index("access_code", unique=True, sparse=True)
+    # access_code unique only when set (partial filter excludes null/missing).
+    # Drop legacy sparse index if present (sparse doesn't ignore null values).
+    try:
+        existing_indexes = await db.files.index_information()
+        if "access_code_1" in existing_indexes and not existing_indexes["access_code_1"].get("partialFilterExpression"):
+            await db.files.drop_index("access_code_1")
+    except Exception as e:
+        logger.warning(f"Could not inspect/drop access_code index: {e}")
+    await db.files.create_index(
+        "access_code",
+        unique=True,
+        partialFilterExpression={"access_code": {"$type": "string"}},
+    )
 
-    # Seed admin
+    # Seed super admin
     username = ADMIN_USERNAME.strip().lower()
     existing = await db.users.find_one({"username": username})
     if existing is None:
@@ -380,16 +504,20 @@ async def on_startup():
             "id": str(uuid.uuid4()),
             "username": username,
             "password_hash": hash_password(ADMIN_PASSWORD),
-            "role": "admin",
+            "role": "super_admin",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        logger.info(f"Seeded admin user: {username}")
-    elif not verify_password(ADMIN_PASSWORD, existing["password_hash"]):
-        await db.users.update_one(
-            {"username": username},
-            {"$set": {"password_hash": hash_password(ADMIN_PASSWORD)}},
-        )
-        logger.info(f"Updated admin password for: {username}")
+        logger.info(f"Seeded super_admin user: {username}")
+    else:
+        # Ensure existing admin has the super_admin role and correct password
+        updates = {}
+        if existing.get("role") != "super_admin":
+            updates["role"] = "super_admin"
+        if not verify_password(ADMIN_PASSWORD, existing["password_hash"]):
+            updates["password_hash"] = hash_password(ADMIN_PASSWORD)
+        if updates:
+            await db.users.update_one({"username": username}, {"$set": updates})
+            logger.info(f"Updated super_admin user: {username}")
 
 
 @app.on_event("shutdown")

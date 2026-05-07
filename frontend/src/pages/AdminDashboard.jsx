@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from "../components/ui/dialog";
@@ -18,11 +19,12 @@ import {
 } from "../components/ui/table";
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
-  CheckCircle2, Clock, FileSignature, Filter,
+  CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import ManagersPanel from "./ManagersPanel";
 
 function StatusBadge({ status }) {
   if (status === "signed") {
@@ -172,7 +174,11 @@ export default function AdminDashboard() {
               <FileText className="w-4 h-4 text-white" strokeWidth={1.8} />
             </div>
             <span className="font-display text-base font-semibold tracking-tight">Soizic</span>
-            <Badge variant="secondary" className="ml-2 font-normal">Admin</Badge>
+            <Badge variant="secondary" className="ml-2 font-normal" data-testid="role-badge">
+              {user?.role === "super_admin" ? (
+                <span className="inline-flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Super admin</span>
+              ) : "Gestionnaire"}
+            </Badge>
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-slate-500 hidden sm:inline" data-testid="header-username">
@@ -192,10 +198,25 @@ export default function AdminDashboard() {
             Tableau de bord
           </h1>
           <p className="text-slate-500 mt-2 text-base">
-            Gérez vos devis, générez des codes d'accès et suivez les signatures.
+            {user?.role === "super_admin"
+              ? "Vue globale : gérez tous les devis et les comptes gestionnaires."
+              : "Gérez vos devis, générez des codes d'accès et suivez les signatures."}
           </p>
         </div>
 
+        <Tabs defaultValue="files" className="w-full">
+          {user?.role === "super_admin" && (
+            <TabsList className="bg-slate-100 p-1 rounded-xl h-11 mb-6" data-testid="admin-tabs">
+              <TabsTrigger value="files" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="tab-files">
+                <FolderKanban className="w-4 h-4 mr-2" strokeWidth={1.6} /> Devis
+              </TabsTrigger>
+              <TabsTrigger value="managers" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="tab-managers">
+                <Users className="w-4 h-4 mr-2" strokeWidth={1.6} /> Gestionnaires
+              </TabsTrigger>
+            </TabsList>
+          )}
+
+          <TabsContent value="files" className="mt-0">
         {/* Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 mb-10">
           {[
@@ -317,7 +338,12 @@ export default function AdminDashboard() {
                           </div>
                           <div className="min-w-0">
                             <div className="text-sm font-medium text-slate-900 truncate max-w-[280px]">{f.filename}</div>
-                            <div className="text-xs text-slate-400">{(f.size / 1024).toFixed(1)} KB</div>
+                            <div className="text-xs text-slate-400">
+                              {(f.size / 1024).toFixed(1)} KB
+                              {user?.role === "super_admin" && f.created_by_username && (
+                                <span className="ml-2 text-slate-500">· par <span className="font-medium">{f.created_by_username}</span></span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </TableCell>
@@ -400,6 +426,14 @@ export default function AdminDashboard() {
             </Table>
           </div>
         </div>
+          </TabsContent>
+
+          {user?.role === "super_admin" && (
+            <TabsContent value="managers" className="mt-0">
+              <ManagersPanel />
+            </TabsContent>
+          )}
+        </Tabs>
       </main>
 
       {/* Preview Dialog */}
