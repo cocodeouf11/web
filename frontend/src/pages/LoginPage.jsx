@@ -63,7 +63,7 @@ export default function LoginPage() {
               <div className="w-9 h-9 rounded-xl bg-[#0055FF] flex items-center justify-center">
                 <FileText className="w-5 h-5 text-white" strokeWidth={1.8} />
               </div>
-              <span className="font-display text-lg font-semibold tracking-tight">SignDevis</span>
+              <span className="font-display text-lg font-semibold tracking-tight">Soizic</span>
             </div>
             <h1 className="font-display text-4xl sm:text-5xl tracking-tight font-medium text-slate-900">
               Bienvenue.
@@ -87,7 +87,7 @@ export default function LoginPage() {
                 className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm"
                 data-testid="tab-admin"
               >
-                <ShieldCheck className="w-4 h-4 mr-2" strokeWidth={1.6} /> Admin
+                <ShieldCheck className="w-4 h-4 mr-2" strokeWidth={1.6} /> Gestionnaire
               </TabsTrigger>
             </TabsList>
 
@@ -131,7 +131,7 @@ export default function LoginPage() {
                   </Label>
                   <Input
                     id="username"
-                    placeholder="admin"
+                    placeholder="utilisateur"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     className="mt-2 h-12 rounded-xl"
@@ -178,10 +178,6 @@ export default function LoginPage() {
       <div className="hidden lg:block relative mesh-bg overflow-hidden">
         <div className="absolute inset-0 flex items-center justify-center p-12">
           <div className="max-w-lg space-y-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/70 backdrop-blur border border-slate-200/60">
-              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-xs font-medium text-slate-700 tracking-wide">100% chiffré</span>
-            </div>
             <h2 className="font-display text-5xl tracking-tight font-medium text-slate-900 leading-[1.05]">
               Signez vos devis.<br/>
               <span className="text-[#0055FF]">Simplement.</span>

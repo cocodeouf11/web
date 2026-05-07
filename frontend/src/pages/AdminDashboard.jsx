@@ -171,7 +171,7 @@ export default function AdminDashboard() {
             <div className="w-8 h-8 rounded-lg bg-[#0055FF] flex items-center justify-center">
               <FileText className="w-4 h-4 text-white" strokeWidth={1.8} />
             </div>
-            <span className="font-display text-base font-semibold tracking-tight">SignDevis</span>
+            <span className="font-display text-base font-semibold tracking-tight">Soizic</span>
             <Badge variant="secondary" className="ml-2 font-normal">Admin</Badge>
           </div>
           <div className="flex items-center gap-3">

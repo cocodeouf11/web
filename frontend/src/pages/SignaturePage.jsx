@@ -138,7 +138,7 @@ export default function SignaturePage() {
             <div className="w-8 h-8 rounded-lg bg-[#0055FF] flex items-center justify-center">
               <FileText className="w-4 h-4 text-white" strokeWidth={1.8} />
             </div>
-            <span className="font-display text-base font-semibold tracking-tight">SignDevis</span>
+            <span className="font-display text-base font-semibold tracking-tight">Soizic</span>
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-slate-500">
@@ -259,7 +259,7 @@ export default function SignaturePage() {
 
       <footer className="border-t border-slate-200 py-6 mt-8">
         <div className="max-w-7xl mx-auto px-6 sm:px-8 text-xs text-slate-400 flex items-center justify-between">
-          <span>© SignDevis · Plateforme sécurisée</span>
+          <span>© Soizic · Plateforme sécurisée</span>
           <span className="font-mono">{code}</span>
         </div>
       </footer>
