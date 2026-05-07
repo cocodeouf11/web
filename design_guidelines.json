@@ -1,0 +1,119 @@
+{
+  "theme": "light",
+  "archetype": "Archetype 4: Swiss & High-Contrast (Apple Crystal Variant)",
+  "typography": {
+    "heading_font": "Outfit",
+    "body_font": "Manrope",
+    "scales": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-medium",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-medium",
+      "h3": "text-xl sm:text-2xl tracking-tight font-medium",
+      "body": "text-base leading-relaxed text-slate-600",
+      "small_label": "text-xs tracking-[0.1em] uppercase text-slate-500 font-semibold"
+    },
+    "rules": [
+      "Headings must use tight letter spacing.",
+      "Use Outfit for all headings to provide a clean, geometric, premium tech feel.",
+      "Use Manrope for body text for optimal legibility."
+    ]
+  },
+  "colors": {
+    "background": {
+      "primary": "#FFFFFF",
+      "secondary": "#F5F7FA"
+    },
+    "text": {
+      "primary": "#0A0A0A",
+      "secondary": "#475569",
+      "muted": "#94A3B8"
+    },
+    "brand": {
+      "primary": "#0055FF",
+      "hover": "#0044CC",
+      "active": "#003399"
+    },
+    "semantic": {
+      "success": "#34C759",
+      "warning": "#FF9500",
+      "danger": "#FF3B30",
+      "border": "#E2E8F0"
+    },
+    "rules": [
+      "No full-screen gradients. Use solid colors or very subtle mesh gradients for backgrounds.",
+      "Primary brand color (#0055FF) should be used sparingly for primary actions (Sign, Login, Validate).",
+      "Text must maintain a high contrast ratio (at least 4.5:1 for body)."
+    ]
+  },
+  "surfaces": {
+    "cards": {
+      "background": "bg-white",
+      "border": "border border-slate-200",
+      "radius": "rounded-xl",
+      "shadow": "shadow-sm",
+      "hover": "hover:shadow-md hover:border-slate-300 transition-all duration-200"
+    },
+    "glassmorphism": {
+      "background": "bg-white/70",
+      "blur": "backdrop-blur-xl",
+      "saturate": "backdrop-saturate-150",
+      "border": "border-b border-slate-200/50",
+      "usage": "Sticky headers, floating navigation, and modal overlays."
+    }
+  },
+  "layout_and_spacing": {
+    "spacing_scale": "Generous spacing. Use p-6 to p-8 for internal card padding.",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "rules": [
+      "Containers with borders MUST have internal padding (p-6 or p-8) to prevent text collision.",
+      "Use optical alignment. If an element has an icon, adjust padding to visually center it.",
+      "F-pattern layout for the dashboard: Critical KPIs top-left, list below."
+    ]
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-brand-primary text-white rounded-lg px-4 py-2 hover:bg-brand-hover transition-colors font-medium",
+      "secondary": "bg-white text-slate-700 border border-slate-200 rounded-lg px-4 py-2 hover:bg-slate-50 transition-colors font-medium",
+      "danger": "bg-semantic-danger text-white rounded-lg px-4 py-2 hover:bg-red-700 transition-colors font-medium"
+    },
+    "inputs": {
+      "style": "bg-white border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary transition-all text-slate-900"
+    },
+    "tables": {
+      "style": "w-full text-left border-collapse",
+      "header": "bg-slate-50 text-slate-500 uppercase text-xs tracking-wider font-semibold py-3 px-4 border-y border-slate-200",
+      "row": "border-b border-slate-100 hover:bg-slate-50/50 transition-colors",
+      "cell": "py-4 px-4 text-sm text-slate-700"
+    },
+    "signature_canvas": {
+      "container": "bg-white border-2 border-dashed border-slate-300 rounded-xl overflow-hidden touch-none",
+      "actions": "flex justify-between items-center p-4 bg-slate-50 border-t border-slate-200"
+    },
+    "toast": "Use Sonner for minimal, Apple-style toast notifications. Bottom-right placement."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "rules": [
+      "Use stroke-width 1.5 for a clean, modern Apple look.",
+      "Keep icon size consistent (w-5 h-5 for inline, w-8 h-8 for empty states)."
+    ]
+  },
+  "media": {
+    "image_urls": [
+      {
+        "category": "login_background",
+        "url": "https://static.prod-images.emergentagent.com/jobs/b5e3343c-e601-4b48-887d-71dcfc8edfe6/images/133adb9778c6a00a45bafe461d2aa07910c94014c01dfbe063603ede44f916b8.png",
+        "description": "Abstract high-end corporate background, Apple style glassmorphism mesh for the login page background."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Build a dual-access login page. Left side: Form (Tabs for Signer Code vs Admin Login). Right side: Cover image using the provided login_background URL.",
+    "Implement an Admin Dashboard with a clean, Apple-like table for PDF files (Name, Date, Status, Access Code, Actions).",
+    "Include an 'Upload PDF' action that adds a new file and automatically generates a unique code (Format: DEV-XXXXX-XX).",
+    "Implement a Signature Mode page (accessed via signer code). It must show a PDF preview container and a prominent Signature Canvas area below or beside it.",
+    "The Signature Canvas must support mouse/touch input, with 'Clear' and 'Validate' buttons. Upon validation, simulate saving the signature and updating the status to 'Signed'.",
+    "Use Lucide-react for all icons (e.g., FileText, CheckCircle, Upload, Trash2, LogOut).",
+    "Ensure the dashboard header uses the Glassmorphism configuration (bg-white/70, backdrop-blur-xl).",
+    "All interactive elements MUST include a data-testid attribute."
+  ]
+}
