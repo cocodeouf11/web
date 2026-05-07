@@ -254,7 +254,7 @@ export default function AdminDashboard() {
               <DialogContent className="sm:max-w-md">
                 <DialogHeader>
                   <DialogTitle className="font-display tracking-tight">Ajouter un devis</DialogTitle>
-                  <DialogDescription>Téléversez un fichier PDF (20 MB maximum).</DialogDescription>
+                  <DialogDescription>Téléversez un fichier PDF (10 MB maximum).</DialogDescription>
                 </DialogHeader>
                 <form onSubmit={handleUpload} className="space-y-4" data-testid="upload-form">
                   <label className="block">
