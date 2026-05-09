@@ -164,12 +164,17 @@ async def login(payload: LoginInput, response: Response):
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Identifiants invalides")
     token = create_access_token(user["id"], user["username"])
+    # Cookie config adapts to HTTPS (cross-site/prod) vs HTTP (local dev).
+    # Note: Bearer token fallback (localStorage) is the primary auth mechanism,
+    # so the cookie is best-effort.
+    cookie_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+    cookie_samesite = os.environ.get("COOKIE_SAMESITE", "none" if cookie_secure else "lax")
     response.set_cookie(
         key="access_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=cookie_secure,
+        samesite=cookie_samesite,
         max_age=8 * 3600,
         path="/",
     )

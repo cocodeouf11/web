@@ -29,6 +29,13 @@ export function AuthProvider({ children }) {
       setUser(data);
       return { ok: true };
     } catch (e) {
+      // Distinguish network errors from API errors so user sees the real cause
+      if (!e.response) {
+        return {
+          ok: false,
+          error: `Impossible de joindre le serveur (${e.message}). Vérifiez REACT_APP_BACKEND_URL et CORS_ORIGINS.`,
+        };
+      }
       return { ok: false, error: formatApiError(e.response?.data?.detail) };
     }
   };
