@@ -8,6 +8,7 @@ import { ShieldCheck, KeyRound, Lock, FileText, ArrowRight } from "lucide-react"
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -54,37 +55,41 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen grid lg:grid-cols-2 bg-white">
+    <div className="min-h-screen grid lg:grid-cols-2 bg-background relative">
+      {/* Top-right theme toggle */}
+      <div className="absolute top-5 right-5 z-10">
+        <ThemeToggle />
+      </div>
+
       {/* Left: form */}
       <div className="flex items-center justify-center px-6 py-12 sm:px-12">
         <div className="w-full max-w-md fade-in">
           <div className="mb-10">
             <div className="inline-flex items-center gap-2 mb-6">
-              <div className="w-9 h-9 rounded-xl bg-[#0055FF] flex items-center justify-center">
+              <div className="w-9 h-9 rounded-xl bg-brand flex items-center justify-center">
                 <FileText className="w-5 h-5 text-white" strokeWidth={1.8} />
               </div>
-              <span className="font-display text-lg font-semibold tracking-tight">Soizic</span>
             </div>
-            <h1 className="font-display text-4xl sm:text-5xl tracking-tight font-medium text-slate-900">
+            <h1 className="font-display text-4xl sm:text-5xl tracking-tight font-medium text-foreground">
               Bienvenue.
             </h1>
-            <p className="text-slate-500 mt-3 text-base">
+            <p className="text-muted-foreground mt-3 text-base">
               Signez vos devis ou gérez vos documents en toute sécurité.
             </p>
           </div>
 
           <Tabs defaultValue="signer" className="w-full" data-testid="login-tabs">
-            <TabsList className="grid w-full grid-cols-2 bg-slate-100 p-1 rounded-xl h-11">
+            <TabsList className="grid w-full grid-cols-2 bg-muted p-1 rounded-xl h-11">
               <TabsTrigger
                 value="signer"
-                className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                className="rounded-lg data-[state=active]:bg-card data-[state=active]:shadow-sm"
                 data-testid="tab-signer"
               >
                 <KeyRound className="w-4 h-4 mr-2" strokeWidth={1.6} /> Signataire
               </TabsTrigger>
               <TabsTrigger
                 value="admin"
-                className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm"
+                className="rounded-lg data-[state=active]:bg-card data-[state=active]:shadow-sm"
                 data-testid="tab-admin"
               >
                 <ShieldCheck className="w-4 h-4 mr-2" strokeWidth={1.6} /> Gestionnaire
@@ -94,7 +99,7 @@ export default function LoginPage() {
             <TabsContent value="signer" className="mt-6">
               <form onSubmit={submitCode} className="space-y-5" data-testid="signer-form">
                 <div>
-                  <Label htmlFor="code" className="text-slate-700 text-sm font-medium">
+                  <Label htmlFor="code" className="text-foreground text-sm font-medium">
                     Code d'accès
                   </Label>
                   <Input
@@ -106,14 +111,14 @@ export default function LoginPage() {
                     data-testid="input-access-code"
                     autoComplete="off"
                   />
-                  <p className="text-xs text-slate-400 mt-2">
+                  <p className="text-xs text-muted-foreground mt-2">
                     Le code vous a été communiqué par votre prestataire.
                   </p>
                 </div>
                 <Button
                   type="submit"
                   disabled={loadingCode}
-                  className="w-full h-12 rounded-xl bg-[#0055FF] hover:bg-[#0044CC] text-white text-base font-medium"
+                  className="w-full h-12 rounded-xl bg-brand text-white text-base font-medium"
                   data-testid="btn-access-code"
                 >
                   {loadingCode ? "Vérification…" : (
@@ -126,7 +131,7 @@ export default function LoginPage() {
             <TabsContent value="admin" className="mt-6">
               <form onSubmit={submitAdmin} className="space-y-5" data-testid="admin-form">
                 <div>
-                  <Label htmlFor="username" className="text-slate-700 text-sm font-medium">
+                  <Label htmlFor="username" className="text-foreground text-sm font-medium">
                     Nom d'utilisateur
                   </Label>
                   <Input
@@ -140,7 +145,7 @@ export default function LoginPage() {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="password" className="text-slate-700 text-sm font-medium">
+                  <Label htmlFor="password" className="text-foreground text-sm font-medium">
                     Mot de passe
                   </Label>
                   <Input
@@ -157,7 +162,7 @@ export default function LoginPage() {
                 <Button
                   type="submit"
                   disabled={loadingAdmin}
-                  className="w-full h-12 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-base font-medium"
+                  className="w-full h-12 rounded-xl bg-foreground text-background hover:opacity-90 text-base font-medium"
                   data-testid="btn-admin-login"
                 >
                   {loadingAdmin ? "Connexion…" : (
@@ -168,7 +173,7 @@ export default function LoginPage() {
             </TabsContent>
           </Tabs>
 
-          <p className="text-xs text-slate-400 mt-10">
+          <p className="text-xs text-muted-foreground mt-10">
             Plateforme sécurisée · Vos données sont protégées
           </p>
         </div>
@@ -178,11 +183,11 @@ export default function LoginPage() {
       <div className="hidden lg:block relative mesh-bg overflow-hidden">
         <div className="absolute inset-0 flex items-center justify-center p-12">
           <div className="max-w-lg space-y-6">
-            <h2 className="font-display text-5xl tracking-tight font-medium text-slate-900 leading-[1.05]">
+            <h2 className="font-display text-5xl tracking-tight font-medium text-foreground leading-[1.05]">
               Signez vos devis.<br/>
-              <span className="text-[#0055FF]">Simplement.</span>
+              <span className="text-brand">Simplement.</span>
             </h2>
-            <p className="text-slate-600 text-lg leading-relaxed">
+            <p className="text-muted-foreground text-lg leading-relaxed">
               Une signature électronique fluide, rapide, et sans friction. Recevez votre code, signez en un geste.
             </p>
             <div className="grid grid-cols-3 gap-3 pt-6">
@@ -191,9 +196,9 @@ export default function LoginPage() {
                 { k: "02", v: "Vérifiez le devis" },
                 { k: "03", v: "Signez en un geste" },
               ].map((s) => (
-                <div key={s.k} className="rounded-xl border border-slate-200/70 bg-white/60 backdrop-blur p-4">
-                  <div className="text-xs font-mono text-[#0055FF] mb-1">{s.k}</div>
-                  <div className="text-sm font-medium text-slate-800">{s.v}</div>
+                <div key={s.k} className="rounded-xl border border-border bg-card/60 backdrop-blur p-4">
+                  <div className="text-xs font-mono text-brand mb-1">{s.k}</div>
+                  <div className="text-sm font-medium text-foreground">{s.v}</div>
                 </div>
               ))}
             </div>

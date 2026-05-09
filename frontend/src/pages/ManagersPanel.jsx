@@ -106,20 +106,20 @@ export default function ManagersPanel() {
   };
 
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden" data-testid="managers-panel">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-5 border-b border-slate-200">
+    <div className="bg-card border border-border rounded-2xl overflow-hidden" data-testid="managers-panel">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-5 border-b border-border">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#0055FF]/10 flex items-center justify-center">
-            <Users className="w-5 h-5 text-[#0055FF]" strokeWidth={1.6} />
+          <div className="w-10 h-10 rounded-xl bg-brand/10 flex items-center justify-center">
+            <Users className="w-5 h-5 text-brand" strokeWidth={1.6} />
           </div>
           <div>
-            <h2 className="font-display text-lg font-medium text-slate-900">Gestionnaires</h2>
-            <p className="text-xs text-slate-500">Comptes pouvant uploader et gérer leurs propres devis</p>
+            <h2 className="font-display text-lg font-medium text-foreground">Gestionnaires</h2>
+            <p className="text-xs text-muted-foreground">Comptes pouvant uploader et gérer leurs propres devis</p>
           </div>
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
           <DialogTrigger asChild>
-            <Button className="h-10 rounded-lg bg-[#0055FF] hover:bg-[#0044CC] text-white" data-testid="btn-add-manager">
+            <Button className="h-10 rounded-lg bg-brand text-white" data-testid="btn-add-manager">
               <UserPlus className="w-4 h-4 mr-2" /> Ajouter un gestionnaire
             </Button>
           </DialogTrigger>
@@ -130,7 +130,7 @@ export default function ManagersPanel() {
             </DialogHeader>
             <form onSubmit={handleCreate} className="space-y-4" data-testid="manager-create-form">
               <div>
-                <Label className="text-slate-700 text-sm font-medium">Nom d'utilisateur</Label>
+                <Label className="text-foreground text-sm font-medium">Nom d'utilisateur</Label>
                 <Input
                   value={newUsername}
                   onChange={(e) => setNewUsername(e.target.value)}
@@ -141,7 +141,7 @@ export default function ManagersPanel() {
                 />
               </div>
               <div>
-                <Label className="text-slate-700 text-sm font-medium">Mot de passe</Label>
+                <Label className="text-foreground text-sm font-medium">Mot de passe</Label>
                 <Input
                   type="password"
                   value={newPassword}
@@ -156,7 +156,7 @@ export default function ManagersPanel() {
                 <Button type="button" variant="outline" onClick={() => setCreateOpen(false)} data-testid="btn-create-cancel">
                   Annuler
                 </Button>
-                <Button type="submit" disabled={submitting} className="bg-[#0055FF] hover:bg-[#0044CC]" data-testid="btn-create-submit">
+                <Button type="submit" disabled={submitting} className="bg-brand text-white" data-testid="btn-create-submit">
                   {submitting ? "Création…" : "Créer"}
                 </Button>
               </DialogFooter>
@@ -265,7 +265,7 @@ export default function ManagersPanel() {
           </DialogHeader>
           <form onSubmit={handleEdit} className="space-y-4" data-testid="manager-edit-form">
             <div>
-              <Label className="text-slate-700 text-sm font-medium">Nom d'utilisateur</Label>
+              <Label className="text-foreground text-sm font-medium">Nom d'utilisateur</Label>
               <Input
                 value={editUsername}
                 onChange={(e) => setEditUsername(e.target.value)}
@@ -274,7 +274,7 @@ export default function ManagersPanel() {
               />
             </div>
             <div>
-              <Label className="text-slate-700 text-sm font-medium inline-flex items-center gap-1.5">
+              <Label className="text-foreground text-sm font-medium inline-flex items-center gap-1.5">
                 <KeyRound className="w-3.5 h-3.5" /> Nouveau mot de passe
               </Label>
               <Input
@@ -291,7 +291,7 @@ export default function ManagersPanel() {
               <Button type="button" variant="outline" onClick={() => setEditTarget(null)} data-testid="btn-edit-cancel">
                 Annuler
               </Button>
-              <Button type="submit" disabled={submitting} className="bg-[#0055FF] hover:bg-[#0044CC]" data-testid="btn-edit-submit">
+              <Button type="submit" disabled={submitting} className="bg-brand text-white" data-testid="btn-edit-submit">
                 {submitting ? "Enregistrement…" : "Enregistrer"}
               </Button>
             </DialogFooter>

@@ -4,11 +4,14 @@ import { Button } from "../components/ui/button";
 import { CheckCircle2, Eraser, FileText, ShieldCheck, ArrowLeft, PenLine, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
+import { base64ToBlobUrl, revokeBlobUrl } from "../lib/pdf";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function SignaturePage() {
   const { code } = useParams();
   const navigate = useNavigate();
   const [file, setFile] = useState(null);
+  const [pdfUrl, setPdfUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [signed, setSigned] = useState(false);
@@ -17,15 +20,18 @@ export default function SignaturePage() {
   const drawingRef = useRef(false);
   const lastPosRef = useRef({ x: 0, y: 0 });
 
+  // Load file
   useEffect(() => {
     let abort = false;
+    let createdUrl = null;
     (async () => {
       try {
         const { data } = await api.get(`/access/file/${encodeURIComponent(code)}`);
-        if (!abort) {
-          setFile(data);
-          if (data.status === "signed") setSigned(true);
-        }
+        if (abort) return;
+        setFile(data);
+        if (data.status === "signed") setSigned(true);
+        createdUrl = base64ToBlobUrl(data.content_b64);
+        setPdfUrl(createdUrl);
       } catch (e) {
         if (!abort) toast.error(formatApiError(e.response?.data?.detail) || "Code invalide");
         setTimeout(() => !abort && navigate("/login"), 1200);
@@ -33,10 +39,13 @@ export default function SignaturePage() {
         if (!abort) setLoading(false);
       }
     })();
-    return () => { abort = true; };
+    return () => {
+      abort = true;
+      if (createdUrl) revokeBlobUrl(createdUrl);
+    };
   }, [code, navigate]);
 
-  // Setup canvas with proper DPI
+  // Setup canvas
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
@@ -49,12 +58,20 @@ export default function SignaturePage() {
       ctx.scale(dpr, dpr);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      ctx.strokeStyle = "#0a0a0a";
+      // Adaptive stroke color based on theme
+      const isDark = document.documentElement.classList.contains("dark");
+      ctx.strokeStyle = isDark ? "#f1f5f9" : "#0a0a0a";
       ctx.lineWidth = 2.2;
     };
     setup();
     window.addEventListener("resize", setup);
-    return () => window.removeEventListener("resize", setup);
+    // re-setup if theme toggles
+    const observer = new MutationObserver(setup);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => {
+      window.removeEventListener("resize", setup);
+      observer.disconnect();
+    };
   }, [file, signed]);
 
   const getPos = (e) => {
@@ -97,16 +114,28 @@ export default function SignaturePage() {
       toast.error("Veuillez signer dans la zone prévue");
       return;
     }
-    const dataUrl = canvasRef.current.toDataURL("image/png");
+    // Build PNG with white background for visibility
+    const c = canvasRef.current;
+    const tmp = document.createElement("canvas");
+    tmp.width = c.width; tmp.height = c.height;
+    const tctx = tmp.getContext("2d");
+    tctx.fillStyle = "#ffffff";
+    tctx.fillRect(0, 0, tmp.width, tmp.height);
+    tctx.drawImage(c, 0, 0);
+    // Re-stroke in black for PDF visibility regardless of theme
+    const dataUrl = tmp.toDataURL("image/png");
+
     setSubmitting(true);
     try {
       await api.post(`/access/sign/${encodeURIComponent(code)}`, { signature_data_url: dataUrl });
       setSigned(true);
       toast.success("Document signé avec succès");
-      // refresh file to show signed version
+      // refresh signed file
       try {
         const { data } = await api.get(`/access/file/${encodeURIComponent(code)}`);
         setFile(data);
+        if (pdfUrl) revokeBlobUrl(pdfUrl);
+        setPdfUrl(base64ToBlobUrl(data.content_b64));
       } catch {}
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || "Erreur lors de la signature");
@@ -117,8 +146,8 @@ export default function SignaturePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <div className="flex items-center gap-2 text-slate-500">
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex items-center gap-2 text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin" /> Chargement du document…
         </div>
       </div>
@@ -127,23 +156,20 @@ export default function SignaturePage() {
 
   if (!file) return null;
 
-  const pdfDataUrl = `data:application/pdf;base64,${file.content_b64}`;
-
   return (
-    <div className="min-h-screen bg-[#fafbfc] flex flex-col">
-      {/* Header */}
+    <div className="min-h-screen bg-background flex flex-col">
       <header className="glass sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-6 sm:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#0055FF] flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-brand flex items-center justify-center">
               <FileText className="w-4 h-4 text-white" strokeWidth={1.8} />
             </div>
-            <span className="font-display text-base font-semibold tracking-tight">Soizic</span>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-slate-500">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Connexion sécurisée
+          <div className="flex items-center gap-2">
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" /> Connexion sécurisée
             </span>
+            <ThemeToggle />
             <Button variant="ghost" size="sm" onClick={() => navigate("/login")} data-testid="btn-back">
               <ArrowLeft className="w-4 h-4 mr-1.5" /> Retour
             </Button>
@@ -152,66 +178,71 @@ export default function SignaturePage() {
       </header>
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 sm:px-8 py-8">
-        {/* Title */}
         <div className="mb-6 fade-in">
-          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs font-mono mb-3" data-testid="access-code-display">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-muted text-muted-foreground text-xs font-mono mb-3" data-testid="access-code-display">
             {code}
           </div>
-          <h1 className="font-display text-3xl sm:text-4xl tracking-tight font-medium text-slate-900 truncate">
+          <h1 className="font-display text-3xl sm:text-4xl tracking-tight font-medium text-foreground truncate">
             {file.filename}
           </h1>
-          <p className="text-slate-500 mt-2">
+          <p className="text-muted-foreground mt-2">
             {signed
               ? "Ce document a été signé. Vous pouvez le consulter ci-dessous."
               : "Veuillez consulter le document, puis signer dans la zone prévue."}
           </p>
         </div>
 
-        {signed ? (
-          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 sm:p-8 mb-6 flex items-start gap-4 fade-in" data-testid="signed-banner">
+        {signed && (
+          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-6 sm:p-8 mb-6 flex items-start gap-4 fade-in" data-testid="signed-banner">
             <div className="w-12 h-12 rounded-2xl bg-emerald-500 flex items-center justify-center flex-shrink-0">
               <CheckCircle2 className="w-6 h-6 text-white" strokeWidth={1.8} />
             </div>
             <div>
-              <h2 className="font-display text-xl font-medium text-emerald-900">Document signé avec succès.</h2>
-              <p className="text-emerald-700 text-sm mt-1">Votre signature a été intégrée au document. Une copie a été enregistrée.</p>
+              <h2 className="font-display text-xl font-medium text-emerald-700 dark:text-emerald-300">Document signé avec succès.</h2>
+              <p className="text-emerald-700/80 dark:text-emerald-300/80 text-sm mt-1">Votre signature a été intégrée au document. Une copie a été enregistrée.</p>
             </div>
           </div>
-        ) : null}
+        )}
 
         <div className="grid lg:grid-cols-5 gap-6">
           {/* PDF preview */}
-          <div className="lg:col-span-3 bg-white border border-slate-200 rounded-2xl overflow-hidden flex flex-col" style={{ height: "75vh" }}>
-            <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+          <div className="lg:col-span-3 bg-card border border-border rounded-2xl overflow-hidden flex flex-col" style={{ height: "75vh" }}>
+            <div className="px-5 py-3 border-b border-border flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-slate-500" strokeWidth={1.6} />
-                <span className="text-sm font-medium text-slate-700">Aperçu du devis</span>
+                <FileText className="w-4 h-4 text-muted-foreground" strokeWidth={1.6} />
+                <span className="text-sm font-medium text-foreground">Aperçu du devis</span>
               </div>
-              <span className="text-xs text-slate-400">PDF</span>
+              <span className="text-xs text-muted-foreground">PDF</span>
             </div>
-            <iframe src={pdfDataUrl} title={file.filename} className="flex-1 w-full bg-slate-100" data-testid="pdf-iframe" />
+            {pdfUrl ? (
+              <iframe src={pdfUrl} title={file.filename} className="flex-1 w-full bg-muted border-0" data-testid="pdf-iframe" />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+                Impossible d'afficher le PDF
+              </div>
+            )}
           </div>
 
           {/* Signature */}
-          <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-6 flex flex-col">
+          <div className="lg:col-span-2 bg-card border border-border rounded-2xl p-6 flex flex-col">
             <div className="flex items-center gap-2 mb-1">
-              <PenLine className="w-4 h-4 text-[#0055FF]" strokeWidth={1.8} />
-              <span className="text-xs uppercase tracking-[0.1em] font-semibold text-slate-500">Votre signature</span>
+              <PenLine className="w-4 h-4 text-brand" strokeWidth={1.8} />
+              <span className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground">Votre signature</span>
             </div>
-            <h3 className="font-display text-xl font-medium text-slate-900 mb-4">
+            <h3 className="font-display text-xl font-medium text-foreground mb-4">
               {signed ? "Signature enregistrée" : "Signez ci-dessous"}
             </h3>
 
             {signed ? (
-              <div className="flex-1 flex items-center justify-center bg-slate-50 rounded-xl border border-slate-200">
+              <div className="flex-1 flex items-center justify-center bg-muted/40 rounded-xl border border-border">
                 <div className="text-center p-8">
                   <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-500 mb-3" strokeWidth={1.5} />
-                  <p className="text-sm text-slate-600">La signature est intégrée au PDF ci-contre.</p>
+                  <p className="text-sm text-muted-foreground">La signature est intégrée au PDF ci-contre.</p>
                 </div>
               </div>
             ) : (
               <>
-                <div className="flex-1 relative rounded-xl overflow-hidden border-2 border-dashed border-slate-300 bg-white" style={{ minHeight: 220 }}>
+                <div className="flex-1 relative rounded-xl overflow-hidden border-2 border-dashed border-border bg-card" style={{ minHeight: 220 }}>
                   <canvas
                     ref={canvasRef}
                     className="signature-canvas absolute inset-0 w-full h-full"
@@ -226,7 +257,7 @@ export default function SignaturePage() {
                   />
                   {!hasDrawn && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <span className="text-slate-300 text-sm italic">Signez ici à la souris ou au doigt</span>
+                      <span className="text-muted-foreground/60 text-sm italic">Signez ici à la souris ou au doigt</span>
                     </div>
                   )}
                 </div>
@@ -242,13 +273,13 @@ export default function SignaturePage() {
                   <Button
                     type="button" onClick={validateSignature}
                     disabled={submitting || !hasDrawn}
-                    className="flex-1 h-11 rounded-xl bg-[#0055FF] hover:bg-[#0044CC] text-white"
+                    className="flex-1 h-11 rounded-xl bg-brand text-white"
                     data-testid="btn-validate-signature"
                   >
                     {submitting ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Validation…</>) : (<><CheckCircle2 className="w-4 h-4 mr-2" /> Valider</>)}
                   </Button>
                 </div>
-                <p className="text-xs text-slate-400 mt-4 leading-relaxed">
+                <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
                   En validant, vous reconnaissez que cette signature électronique a la même valeur juridique qu'une signature manuscrite.
                 </p>
               </>
@@ -257,9 +288,9 @@ export default function SignaturePage() {
         </div>
       </main>
 
-      <footer className="border-t border-slate-200 py-6 mt-8">
-        <div className="max-w-7xl mx-auto px-6 sm:px-8 text-xs text-slate-400 flex items-center justify-between">
-          <span>© Soizic · Plateforme sécurisée</span>
+      <footer className="border-t border-border py-6 mt-8">
+        <div className="max-w-7xl mx-auto px-6 sm:px-8 text-xs text-muted-foreground flex items-center justify-between">
+          <span>Plateforme sécurisée</span>
           <span className="font-mono">{code}</span>
         </div>
       </footer>

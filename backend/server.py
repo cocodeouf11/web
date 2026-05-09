@@ -132,6 +132,17 @@ class SignInput(BaseModel):
     signature_data_url: str
 
 
+class SignaturePositionUpdate(BaseModel):
+    signature_position: str  # one of: top-left, top-center, top-right, middle-left, middle-center, middle-right, bottom-left, bottom-center, bottom-right
+
+
+VALID_POSITIONS = {
+    "top-left", "top-center", "top-right",
+    "middle-left", "middle-center", "middle-right",
+    "bottom-left", "bottom-center", "bottom-right",
+}
+
+
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -206,6 +217,7 @@ async def upload_file(
         created_at=datetime.now(timezone.utc).isoformat(),
         signed_at=None,
         signed_content_b64=None,
+        signature_position="bottom-right",
     )
     db.add(new_file)
     await db.commit()
@@ -292,6 +304,27 @@ async def generate_code(file_id: str, user=Depends(get_current_admin), db: Async
     return {"access_code": code}
 
 
+@api_router.patch("/files/{file_id}/signature-position")
+async def update_signature_position(
+    file_id: str,
+    payload: SignaturePositionUpdate,
+    user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.signature_position not in VALID_POSITIONS:
+        raise HTTPException(400, "Position invalide")
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
+        raise HTTPException(404, "Fichier introuvable")
+    if f.status == "signed":
+        raise HTTPException(400, "Impossible de modifier la position d'un document déjà signé")
+    f.signature_position = payload.signature_position
+    await db.commit()
+    return {"ok": True, "signature_position": payload.signature_position}
+
+
 # ---------- Signer (public) ----------
 @api_router.post("/access/verify")
 async def verify_code(payload: CodeVerify, db: AsyncSession = Depends(get_db)):
@@ -312,7 +345,7 @@ async def get_file_by_code(code: str, db: AsyncSession = Depends(get_db)):
     return {"id": f.id, "filename": f.filename, "status": f.status, "content_b64": content_b64}
 
 
-def _embed_signature_in_pdf(pdf_bytes: bytes, signature_png_bytes: bytes) -> bytes:
+def _embed_signature_in_pdf(pdf_bytes: bytes, signature_png_bytes: bytes, position: str = "bottom-right") -> bytes:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
     last_page = reader.pages[-1]
@@ -323,13 +356,33 @@ def _embed_signature_in_pdf(pdf_bytes: bytes, signature_png_bytes: bytes) -> byt
     target_w = min(220.0, width * 0.4)
     aspect = sig_h / sig_w if sig_w else 1
     target_h = target_w * aspect
+
+    margin = 36.0
+    parts = position.split("-") if "-" in position else ["bottom", "right"]
+    v_pos = parts[0]  # top, middle, bottom
+    h_pos = parts[1]  # left, center, right
+
+    # Horizontal
+    if h_pos == "left":
+        x = margin
+    elif h_pos == "center":
+        x = (width - target_w) / 2
+    else:  # right
+        x = width - target_w - margin
+    # Vertical (PDF coordinates: 0 = bottom)
+    if v_pos == "top":
+        y = height - target_h - margin
+    elif v_pos == "middle":
+        y = (height - target_h) / 2
+    else:  # bottom
+        y = margin
+
     overlay_buf = io.BytesIO()
     c = rl_canvas.Canvas(overlay_buf, pagesize=(width, height))
-    margin = 36.0
-    x = width - target_w - margin; y = margin
     c.drawImage(ImageReader(sig_img), x, y, width=target_w, height=target_h, mask='auto')
     c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
-    c.drawString(x, y - 10, f"Signé le {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    label_y = y - 10 if v_pos != "top" else y + target_h + 4
+    c.drawString(x, label_y, f"Signé le {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     c.save()
     overlay_reader = PdfReader(io.BytesIO(overlay_buf.getvalue()))
     overlay_page = overlay_reader.pages[0]
@@ -358,7 +411,7 @@ async def sign_file(code: str, payload: SignInput, db: AsyncSession = Depends(ge
         raise HTTPException(400, "Signature invalide")
     pdf_bytes = base64.b64decode(f.content_b64)
     try:
-        signed_pdf = _embed_signature_in_pdf(pdf_bytes, sig_bytes)
+        signed_pdf = _embed_signature_in_pdf(pdf_bytes, sig_bytes, f.signature_position or "bottom-right")
     except Exception as e:
         logger.exception("Erreur signature")
         raise HTTPException(500, f"Erreur lors de la signature: {e}")

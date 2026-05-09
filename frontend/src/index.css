@@ -4,20 +4,14 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap');
 
-:root {
-    --brand: #0055FF;
-    --brand-hover: #0044CC;
-    --brand-active: #003399;
-}
-
-html,
-body {
+html, body {
     margin: 0;
-    background: #ffffff;
-    color: #0a0a0a;
     font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 h1, h2, h3, h4, h5, h6, .font-display {
@@ -26,25 +20,23 @@ h1, h2, h3, h4, h5, h6, .font-display {
 }
 
 ::selection {
-    background: rgba(0, 85, 255, 0.18);
-    color: #0a0a0a;
+    background: hsl(var(--primary) / 0.18);
 }
 
-/* Subtle mesh background for login */
+/* Subtle mesh background */
 .mesh-bg {
     background:
-        radial-gradient(at 20% 20%, rgba(0, 85, 255, 0.10) 0px, transparent 45%),
-        radial-gradient(at 85% 15%, rgba(124, 58, 237, 0.08) 0px, transparent 45%),
-        radial-gradient(at 75% 85%, rgba(0, 85, 255, 0.10) 0px, transparent 45%),
-        radial-gradient(at 15% 85%, rgba(34, 197, 94, 0.05) 0px, transparent 45%),
-        #fafbfc;
+        radial-gradient(at 20% 20%, hsl(var(--primary) / 0.10) 0px, transparent 45%),
+        radial-gradient(at 85% 15%, hsl(var(--accent-glow) / 0.08) 0px, transparent 45%),
+        radial-gradient(at 75% 85%, hsl(var(--primary) / 0.10) 0px, transparent 45%),
+        hsl(var(--background-mesh));
 }
 
 .glass {
-    background: rgba(255, 255, 255, 0.72);
+    background: hsl(var(--background) / 0.72);
     backdrop-filter: saturate(160%) blur(18px);
     -webkit-backdrop-filter: saturate(160%) blur(18px);
-    border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+    border-bottom: 1px solid hsl(var(--border) / 0.6);
 }
 
 .fade-in {
@@ -60,21 +52,21 @@ h1, h2, h3, h4, h5, h6, .font-display {
 }
 .lift:hover {
     transform: translateY(-1px);
-    box-shadow: 0 8px 24px -8px rgba(15, 23, 42, 0.12);
+    box-shadow: 0 8px 24px -8px hsl(var(--foreground) / 0.12);
 }
 
-/* Signature canvas */
 .signature-canvas {
     touch-action: none;
     cursor: crosshair;
     background:
-        linear-gradient(transparent 31px, #e2e8f0 31px, #e2e8f0 32px, transparent 32px) 0 0/100% 32px,
-        #ffffff;
+        linear-gradient(transparent 31px, hsl(var(--border)) 31px, hsl(var(--border)) 32px, transparent 32px) 0 0/100% 32px,
+        hsl(var(--card));
 }
 
 @layer base {
-    :root {
+    :root, .light {
         --background: 0 0% 100%;
+        --background-mesh: 220 16% 97%;
         --foreground: 222 47% 5%;
         --card: 0 0% 100%;
         --card-foreground: 222 47% 5%;
@@ -82,6 +74,8 @@ h1, h2, h3, h4, h5, h6, .font-display {
         --popover-foreground: 222 47% 5%;
         --primary: 222 100% 50%;
         --primary-foreground: 0 0% 100%;
+        --primary-hover: 222 100% 40%;
+        --accent-glow: 270 80% 60%;
         --secondary: 210 40% 96.1%;
         --secondary-foreground: 222 47% 11.2%;
         --muted: 210 40% 96.1%;
@@ -95,9 +89,41 @@ h1, h2, h3, h4, h5, h6, .font-display {
         --ring: 222 100% 50%;
         --radius: 0.625rem;
     }
+
+    .dark {
+        --background: 222 47% 6%;
+        --background-mesh: 222 47% 8%;
+        --foreground: 210 40% 98%;
+        --card: 222 47% 9%;
+        --card-foreground: 210 40% 98%;
+        --popover: 222 47% 9%;
+        --popover-foreground: 210 40% 98%;
+        --primary: 215 100% 60%;
+        --primary-foreground: 0 0% 100%;
+        --primary-hover: 215 100% 70%;
+        --accent-glow: 270 80% 70%;
+        --secondary: 222 47% 14%;
+        --secondary-foreground: 210 40% 98%;
+        --muted: 222 47% 14%;
+        --muted-foreground: 215 20% 65%;
+        --accent: 222 47% 14%;
+        --accent-foreground: 210 40% 98%;
+        --destructive: 0 62% 50%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 222 47% 18%;
+        --input: 222 47% 18%;
+        --ring: 215 100% 60%;
+    }
 }
 
 @layer base {
     * { @apply border-border; }
     body { @apply bg-background text-foreground; }
 }
+
+/* Brand color util */
+.bg-brand { background-color: hsl(var(--primary)); }
+.bg-brand:hover { background-color: hsl(var(--primary-hover)); }
+.text-brand { color: hsl(var(--primary)); }
+.border-brand { border-color: hsl(var(--primary)); }
+.ring-brand { --tw-ring-color: hsl(var(--primary)); }

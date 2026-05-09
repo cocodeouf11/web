@@ -38,6 +38,7 @@ class File(Base):
     created_by_username: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     signed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    signature_position: Mapped[str] = mapped_column(String(20), nullable=False, default="bottom-right")
 
 
 # Async engine + session factory
@@ -46,9 +47,21 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 
 
 async def init_db():
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist + run light migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Light migration: add signature_position to existing files table if missing
+        from sqlalchemy import text
+        try:
+            cols = await conn.execute(text("PRAGMA table_info(files)"))
+            col_names = [row[1] for row in cols.fetchall()]
+            if "signature_position" not in col_names:
+                await conn.execute(text(
+                    "ALTER TABLE files ADD COLUMN signature_position VARCHAR(20) NOT NULL DEFAULT 'bottom-right'"
+                ))
+        except Exception:
+            # PRAGMA only works on SQLite; on other DBs use create_all (column already added by SQLAlchemy)
+            pass
 
 
 def user_to_dict(u: User, include_password: bool = False) -> dict:
@@ -74,6 +87,7 @@ def file_to_dict(f: File, include_content: bool = False) -> dict:
         "created_by_username": f.created_by_username,
         "created_at": f.created_at,
         "signed_at": f.signed_at,
+        "signature_position": f.signature_position or "bottom-right",
     }
     if include_content:
         d["content_b64"] = f.content_b64
