@@ -15,29 +15,22 @@ from typing import Optional, List
 
 import bcrypt
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File as UploadFileParam
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from sqlalchemy import select, delete, func
+from sqlalchemy.ext.asyncio import AsyncSession
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.utils import ImageReader
 
-# Configuration utilisateurs/rôles (modifiable via /app/backend/config.py)
+from db import init_db, AsyncSessionLocal, User, File as FileModel, user_to_dict, file_to_dict
 from config import USERS, ROLES, SYNC_PASSWORDS, SYNC_DELETE_MISSING, MAX_PDF_SIZE_MB, ACCESS_CODE_PREFIX
-
-# ---------- DB ----------
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
 
 # ---------- Constants ----------
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 
 # ---------- App ----------
 app = FastAPI()
@@ -46,7 +39,13 @@ logger = logging.getLogger("server")
 logging.basicConfig(level=logging.INFO)
 
 
-# ---------- Helpers ----------
+# ---------- DB session dependency ----------
+async def get_db():
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+# ---------- Auth helpers ----------
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -69,14 +68,12 @@ def create_access_token(user_id: str, username: str) -> str:
 
 
 def generate_access_code() -> str:
-    """Format DEV-XXXXX-XX with digits and uppercase letters."""
     part1 = ''.join(random.choices(string.digits, k=5))
     part2 = ''.join(random.choices(string.ascii_uppercase, k=2))
     return f"{ACCESS_CODE_PREFIX}-{part1}-{part2}"
 
 
 def get_role_permissions(role: str) -> list:
-    """Return the permissions list for a given role (from config.ROLES)."""
     return ROLES.get(role, {}).get("permissions", [])
 
 
@@ -84,7 +81,7 @@ def get_role_label(role: str) -> str:
     return ROLES.get(role, {}).get("label", role)
 
 
-async def get_current_admin(request: Request) -> dict:
+async def get_current_admin(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
     token = request.cookies.get("access_token")
     if not token:
         auth_header = request.headers.get("Authorization", "")
@@ -96,10 +93,11 @@ async def get_current_admin(request: Request) -> dict:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
-        user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+        result = await db.execute(select(User).where(User.id == payload["sub"]))
+        user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-        return user
+        return user_to_dict(user)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -112,11 +110,8 @@ async def require_super_admin(user=Depends(get_current_admin)) -> dict:
     return user
 
 
-def _files_scope(user: dict) -> dict:
-    """Return a Mongo filter that scopes files to the current user (super_admin sees all)."""
-    if user.get("role") == "super_admin":
-        return {}
-    return {"created_by": user["id"]}
+def is_super_admin(user: dict) -> bool:
+    return user.get("role") == "super_admin"
 
 
 # ---------- Models ----------
@@ -125,17 +120,8 @@ class LoginInput(BaseModel):
     password: str
 
 
-class FileMeta(BaseModel):
-    id: str
-    filename: str
-    created_at: str
-    status: str  # "unsigned" | "signed"
-    access_code: Optional[str] = None
-    size: int
-
-
 class StatusUpdate(BaseModel):
-    status: str  # "signed" | "unsigned"
+    status: str
 
 
 class CodeVerify(BaseModel):
@@ -143,7 +129,7 @@ class CodeVerify(BaseModel):
 
 
 class SignInput(BaseModel):
-    signature_data_url: str  # data:image/png;base64,...
+    signature_data_url: str
 
 
 class UserCreate(BaseModel):
@@ -158,32 +144,26 @@ class UserUpdate(BaseModel):
 
 # ---------- Auth Endpoints ----------
 @api_router.post("/auth/login")
-async def login(payload: LoginInput, response: Response):
+async def login(payload: LoginInput, response: Response, db: AsyncSession = Depends(get_db)):
     username = payload.username.strip().lower()
-    user = await db.users.find_one({"username": username})
-    if not user or not verify_password(payload.password, user["password_hash"]):
+    result = await db.execute(select(User).where(User.username == username))
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Identifiants invalides")
-    token = create_access_token(user["id"], user["username"])
-    # Cookie config adapts to HTTPS (cross-site/prod) vs HTTP (local dev).
-    # Note: Bearer token fallback (localStorage) is the primary auth mechanism,
-    # so the cookie is best-effort.
+    token = create_access_token(user.id, user.username)
     cookie_secure = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
     cookie_samesite = os.environ.get("COOKIE_SAMESITE", "none" if cookie_secure else "lax")
     response.set_cookie(
-        key="access_token",
-        value=token,
-        httponly=True,
-        secure=cookie_secure,
-        samesite=cookie_samesite,
-        max_age=8 * 3600,
-        path="/",
+        key="access_token", value=token, httponly=True,
+        secure=cookie_secure, samesite=cookie_samesite,
+        max_age=8 * 3600, path="/",
     )
     return {
-        "id": user["id"],
-        "username": user["username"],
-        "role": user.get("role", "gestionnaire"),
-        "role_label": get_role_label(user.get("role", "gestionnaire")),
-        "permissions": get_role_permissions(user.get("role", "gestionnaire")),
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "role_label": get_role_label(user.role),
+        "permissions": get_role_permissions(user.role),
         "token": token,
     }
 
@@ -197,18 +177,15 @@ async def logout(response: Response):
 @api_router.get("/auth/me")
 async def me(user=Depends(get_current_admin)):
     role = user.get("role", "gestionnaire")
-    return {
-        **user,
-        "role_label": get_role_label(role),
-        "permissions": get_role_permissions(role),
-    }
+    return {**user, "role_label": get_role_label(role), "permissions": get_role_permissions(role)}
 
 
-# ---------- Files (Admin) Endpoints ----------
+# ---------- Files ----------
 @api_router.post("/files/upload")
 async def upload_file(
-    file: UploadFile = File(...),
+    file: UploadFile = UploadFileParam(...),
     user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Seuls les fichiers PDF sont acceptés")
@@ -217,203 +194,179 @@ async def upload_file(
         raise HTTPException(status_code=400, detail=f"Fichier trop volumineux (max {MAX_PDF_SIZE_MB}MB)")
 
     file_id = str(uuid.uuid4())
-    doc = {
-        "id": file_id,
-        "filename": file.filename,
-        "content_b64": base64.b64encode(content).decode("utf-8"),
-        "size": len(content),
-        "status": "unsigned",
-        "access_code": None,
-        "created_by": user["id"],
-        "created_by_username": user["username"],
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "signed_at": None,
-        "signed_content_b64": None,
-    }
-    await db.files.insert_one(doc)
-    return {
-        "id": file_id,
-        "filename": file.filename,
-        "status": "unsigned",
-        "access_code": None,
-        "size": len(content),
-        "created_at": doc["created_at"],
-        "created_by_username": user["username"],
-    }
+    new_file = FileModel(
+        id=file_id,
+        filename=file.filename,
+        content_b64=base64.b64encode(content).decode("utf-8"),
+        size=len(content),
+        status="unsigned",
+        access_code=None,
+        created_by=user["id"],
+        created_by_username=user["username"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+        signed_at=None,
+        signed_content_b64=None,
+    )
+    db.add(new_file)
+    await db.commit()
+    return file_to_dict(new_file)
+
+
+def _files_filter(query, user: dict):
+    if not is_super_admin(user):
+        return query.where(FileModel.created_by == user["id"])
+    return query
 
 
 @api_router.get("/files")
-async def list_files(user=Depends(get_current_admin)):
-    cursor = db.files.find(
-        _files_scope(user),
-        {"_id": 0, "content_b64": 0, "signed_content_b64": 0},
-    ).sort("created_at", -1)
-    files = await cursor.to_list(1000)
-    return files
+async def list_files(user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    q = select(FileModel).order_by(FileModel.created_at.desc())
+    q = _files_filter(q, user)
+    result = await db.execute(q)
+    return [file_to_dict(f) for f in result.scalars().all()]
 
 
 @api_router.get("/files/{file_id}")
-async def get_file_meta(file_id: str, user=Depends(get_current_admin)):
-    f = await db.files.find_one(
-        {"id": file_id, **_files_scope(user)},
-        {"_id": 0, "content_b64": 0, "signed_content_b64": 0},
-    )
+async def get_file_meta(file_id: str, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Fichier introuvable")
-    return f
+    return file_to_dict(f)
 
 
 @api_router.get("/files/{file_id}/download")
-async def download_file(file_id: str, signed: bool = False, user=Depends(get_current_admin)):
-    f = await db.files.find_one({"id": file_id, **_files_scope(user)})
+async def download_file(file_id: str, signed: bool = False, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Fichier introuvable")
-    content_b64 = f.get("signed_content_b64") if signed and f.get("signed_content_b64") else f["content_b64"]
-    return {"filename": f["filename"], "content_b64": content_b64}
+    content_b64 = f.signed_content_b64 if signed and f.signed_content_b64 else f.content_b64
+    return {"filename": f.filename, "content_b64": content_b64}
 
 
 @api_router.delete("/files/{file_id}")
-async def delete_file(file_id: str, user=Depends(get_current_admin)):
-    res = await db.files.delete_one({"id": file_id, **_files_scope(user)})
-    if res.deleted_count == 0:
+async def delete_file(file_id: str, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
         raise HTTPException(404, "Fichier introuvable")
+    await db.delete(f)
+    await db.commit()
     return {"ok": True}
 
 
 @api_router.patch("/files/{file_id}/status")
-async def update_status(file_id: str, payload: StatusUpdate, user=Depends(get_current_admin)):
+async def update_status(file_id: str, payload: StatusUpdate, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
     if payload.status not in ("signed", "unsigned"):
         raise HTTPException(400, "Statut invalide")
-    res = await db.files.update_one(
-        {"id": file_id, **_files_scope(user)},
-        {"$set": {"status": payload.status}},
-    )
-    if res.matched_count == 0:
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
         raise HTTPException(404, "Fichier introuvable")
+    f.status = payload.status
+    await db.commit()
     return {"ok": True, "status": payload.status}
 
 
 @api_router.post("/files/{file_id}/generate-code")
-async def generate_code(file_id: str, user=Depends(get_current_admin)):
-    f = await db.files.find_one({"id": file_id, **_files_scope(user)}, {"_id": 0})
+async def generate_code(file_id: str, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Fichier introuvable")
-    # generate unique code
     for _ in range(20):
         code = generate_access_code()
-        existing = await db.files.find_one({"access_code": code})
-        if not existing:
+        clash = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
+        if not clash:
             break
     else:
         raise HTTPException(500, "Impossible de générer un code unique")
-    await db.files.update_one({"id": file_id}, {"$set": {"access_code": code}})
+    f.access_code = code
+    await db.commit()
     return {"access_code": code}
 
 
-# ---------- Signer (Public) Endpoints ----------
+# ---------- Signer (public) ----------
 @api_router.post("/access/verify")
-async def verify_code(payload: CodeVerify):
+async def verify_code(payload: CodeVerify, db: AsyncSession = Depends(get_db)):
     code = payload.code.strip().upper()
-    f = await db.files.find_one(
-        {"access_code": code},
-        {"_id": 0, "content_b64": 0, "signed_content_b64": 0},
-    )
+    f = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Code d'accès invalide")
-    return {"id": f["id"], "filename": f["filename"], "status": f["status"], "access_code": code}
+    return {"id": f.id, "filename": f.filename, "status": f.status, "access_code": code}
 
 
 @api_router.get("/access/file/{code}")
-async def get_file_by_code(code: str):
+async def get_file_by_code(code: str, db: AsyncSession = Depends(get_db)):
     code = code.strip().upper()
-    f = await db.files.find_one({"access_code": code})
+    f = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Code d'accès invalide")
-    content_b64 = f.get("signed_content_b64") if f["status"] == "signed" and f.get("signed_content_b64") else f["content_b64"]
-    return {
-        "id": f["id"],
-        "filename": f["filename"],
-        "status": f["status"],
-        "content_b64": content_b64,
-    }
+    content_b64 = f.signed_content_b64 if f.status == "signed" and f.signed_content_b64 else f.content_b64
+    return {"id": f.id, "filename": f.filename, "status": f.status, "content_b64": content_b64}
 
 
 def _embed_signature_in_pdf(pdf_bytes: bytes, signature_png_bytes: bytes) -> bytes:
-    """Add signature image to the bottom-right of the last page of the PDF."""
     reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
-
-    # Build overlay PDF for the last page
     last_page = reader.pages[-1]
     media = last_page.mediabox
-    width = float(media.width)
-    height = float(media.height)
-
-    # Open signature
+    width = float(media.width); height = float(media.height)
     sig_img = Image.open(io.BytesIO(signature_png_bytes)).convert("RGBA")
     sig_w, sig_h = sig_img.size
     target_w = min(220.0, width * 0.4)
     aspect = sig_h / sig_w if sig_w else 1
     target_h = target_w * aspect
-
     overlay_buf = io.BytesIO()
     c = rl_canvas.Canvas(overlay_buf, pagesize=(width, height))
     margin = 36.0
-    x = width - target_w - margin
-    y = margin
+    x = width - target_w - margin; y = margin
     c.drawImage(ImageReader(sig_img), x, y, width=target_w, height=target_h, mask='auto')
-    c.setFont("Helvetica", 8)
-    c.setFillColorRGB(0.4, 0.4, 0.4)
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    c.drawString(x, y - 10, f"Signé le {timestamp}")
+    c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawString(x, y - 10, f"Signé le {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     c.save()
-
     overlay_reader = PdfReader(io.BytesIO(overlay_buf.getvalue()))
     overlay_page = overlay_reader.pages[0]
-
     for i, page in enumerate(reader.pages):
         if i == len(reader.pages) - 1:
             page.merge_page(overlay_page)
         writer.add_page(page)
-
-    out = io.BytesIO()
-    writer.write(out)
+    out = io.BytesIO(); writer.write(out)
     return out.getvalue()
 
 
 @api_router.post("/access/sign/{code}")
-async def sign_file(code: str, payload: SignInput):
+async def sign_file(code: str, payload: SignInput, db: AsyncSession = Depends(get_db)):
     code = code.strip().upper()
-    f = await db.files.find_one({"access_code": code})
+    f = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Code d'accès invalide")
-    if f["status"] == "signed":
+    if f.status == "signed":
         raise HTTPException(400, "Ce document a déjà été signé")
-
-    # Parse signature data url
-    data_url = payload.signature_data_url
-    if "," not in data_url:
+    if "," not in payload.signature_data_url:
         raise HTTPException(400, "Signature invalide")
-    header, b64 = data_url.split(",", 1)
+    _, b64 = payload.signature_data_url.split(",", 1)
     try:
         sig_bytes = base64.b64decode(b64)
     except Exception:
         raise HTTPException(400, "Signature invalide")
-
-    pdf_bytes = base64.b64decode(f["content_b64"])
+    pdf_bytes = base64.b64decode(f.content_b64)
     try:
         signed_pdf = _embed_signature_in_pdf(pdf_bytes, sig_bytes)
     except Exception as e:
         logger.exception("Erreur signature")
         raise HTTPException(500, f"Erreur lors de la signature: {e}")
-
-    signed_b64 = base64.b64encode(signed_pdf).decode("utf-8")
-    now = datetime.now(timezone.utc).isoformat()
-    await db.files.update_one(
-        {"id": f["id"]},
-        {"$set": {"status": "signed", "signed_content_b64": signed_b64, "signed_at": now}},
-    )
-    return {"ok": True, "status": "signed", "signed_at": now}
+    f.signed_content_b64 = base64.b64encode(signed_pdf).decode("utf-8")
+    f.status = "signed"
+    f.signed_at = datetime.now(timezone.utc).isoformat()
+    await db.commit()
+    return {"ok": True, "status": "signed", "signed_at": f.signed_at}
 
 
 # ---------- Health ----------
@@ -422,158 +375,143 @@ async def root():
     return {"message": "Devis Signature API", "ok": True}
 
 
-# ---------- User Management (super_admin only) ----------
+# ---------- User Management ----------
 @api_router.get("/users")
-async def list_users(user=Depends(require_super_admin)):
-    cursor = db.users.find(
-        {"role": {"$ne": "super_admin"}},
-        {"_id": 0, "password_hash": 0},
-    ).sort("created_at", -1)
-    users = await cursor.to_list(1000)
-    # attach file count for each user
+async def list_users(user=Depends(require_super_admin), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(User).where(User.role != "super_admin").order_by(User.created_at.desc())
+    )
+    users = result.scalars().all()
+    out = []
     for u in users:
-        u["files_count"] = await db.files.count_documents({"created_by": u["id"]})
-    return users
+        d = user_to_dict(u)
+        # files count
+        cnt = (await db.execute(
+            select(func.count()).select_from(FileModel).where(FileModel.created_by == u.id)
+        )).scalar_one()
+        d["files_count"] = cnt
+        out.append(d)
+    return out
 
 
 @api_router.post("/users")
-async def create_user(payload: UserCreate, user=Depends(require_super_admin)):
+async def create_user(payload: UserCreate, user=Depends(require_super_admin), db: AsyncSession = Depends(get_db)):
     username = payload.username.strip().lower()
     if not username or len(username) < 3:
         raise HTTPException(400, "Nom d'utilisateur trop court (min 3 caractères)")
     if not payload.password or len(payload.password) < 6:
         raise HTTPException(400, "Mot de passe trop court (min 6 caractères)")
-    existing = await db.users.find_one({"username": username})
+    existing = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
     if existing:
         raise HTTPException(400, "Ce nom d'utilisateur existe déjà")
     new_id = str(uuid.uuid4())
-    await db.users.insert_one({
-        "id": new_id,
-        "username": username,
-        "password_hash": hash_password(payload.password),
-        "role": "gestionnaire",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    new_user = User(
+        id=new_id, username=username,
+        password_hash=hash_password(payload.password),
+        role="gestionnaire",
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(new_user)
+    await db.commit()
     return {"id": new_id, "username": username, "role": "gestionnaire"}
 
 
 @api_router.patch("/users/{user_id}")
-async def update_user(user_id: str, payload: UserUpdate, user=Depends(require_super_admin)):
-    target = await db.users.find_one({"id": user_id})
+async def update_user(user_id: str, payload: UserUpdate, user=Depends(require_super_admin), db: AsyncSession = Depends(get_db)):
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    if target.get("role") == "super_admin":
+    if target.role == "super_admin":
         raise HTTPException(403, "Impossible de modifier un super admin")
-    updates = {}
+
     if payload.username is not None:
         new_username = payload.username.strip().lower()
         if len(new_username) < 3:
             raise HTTPException(400, "Nom d'utilisateur trop court")
-        if new_username != target["username"]:
-            clash = await db.users.find_one({"username": new_username})
+        if new_username != target.username:
+            clash = (await db.execute(select(User).where(User.username == new_username))).scalar_one_or_none()
             if clash:
                 raise HTTPException(400, "Ce nom d'utilisateur existe déjà")
-            updates["username"] = new_username
+            old_username = target.username
+            target.username = new_username
+            # propagate to files
+            files_to_update = (await db.execute(
+                select(FileModel).where(FileModel.created_by == user_id)
+            )).scalars().all()
+            for f in files_to_update:
+                f.created_by_username = new_username
     if payload.password is not None and payload.password != "":
         if len(payload.password) < 6:
             raise HTTPException(400, "Mot de passe trop court (min 6 caractères)")
-        updates["password_hash"] = hash_password(payload.password)
-    if not updates:
-        return {"ok": True, "updated": False}
-    await db.users.update_one({"id": user_id}, {"$set": updates})
-    # propagate username change to files
-    if "username" in updates:
-        await db.files.update_many(
-            {"created_by": user_id},
-            {"$set": {"created_by_username": updates["username"]}},
-        )
+        target.password_hash = hash_password(payload.password)
+    await db.commit()
     return {"ok": True, "updated": True}
 
 
 @api_router.delete("/users/{user_id}")
-async def delete_user(user_id: str, user=Depends(require_super_admin)):
-    target = await db.users.find_one({"id": user_id})
+async def delete_user(user_id: str, user=Depends(require_super_admin), db: AsyncSession = Depends(get_db)):
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    if target.get("role") == "super_admin":
+    if target.role == "super_admin":
         raise HTTPException(403, "Impossible de supprimer un super admin")
-    if target["id"] == user["id"]:
+    if target.id == user["id"]:
         raise HTTPException(400, "Impossible de se supprimer soi-même")
-    await db.users.delete_one({"id": user_id})
-    # delete files owned by this user
-    await db.files.delete_many({"created_by": user_id})
+    await db.execute(delete(FileModel).where(FileModel.created_by == user_id))
+    await db.delete(target)
+    await db.commit()
     return {"ok": True}
 
 
 # ---------- Startup ----------
 @app.on_event("startup")
 async def on_startup():
-    # Indexes
-    await db.users.create_index("username", unique=True)
-    await db.files.create_index("id", unique=True)
-    # access_code unique only when set (partial filter excludes null/missing).
-    # Drop legacy sparse index if present (sparse doesn't ignore null values).
-    try:
-        existing_indexes = await db.files.index_information()
-        if "access_code_1" in existing_indexes and not existing_indexes["access_code_1"].get("partialFilterExpression"):
-            await db.files.drop_index("access_code_1")
-    except Exception as e:
-        logger.warning(f"Could not inspect/drop access_code index: {e}")
-    await db.files.create_index(
-        "access_code",
-        unique=True,
-        partialFilterExpression={"access_code": {"$type": "string"}},
-    )
+    await init_db()
 
-    # Seed/Sync users from config.py
-    config_usernames = set()
-    for entry in USERS:
-        username = entry.get("username", "").strip().lower()
-        password = entry.get("password", "")
-        role = entry.get("role", "gestionnaire")
-        if not username or not password:
-            logger.warning(f"Skipping invalid user entry in config: {entry}")
-            continue
-        if role not in ROLES:
-            logger.warning(f"Unknown role '{role}' for user '{username}' — skipped")
-            continue
-        config_usernames.add(username)
-        existing = await db.users.find_one({"username": username})
-        if existing is None:
-            await db.users.insert_one({
-                "id": str(uuid.uuid4()),
-                "username": username,
-                "password_hash": hash_password(password),
-                "role": role,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
-            logger.info(f"[config] Created user: {username} ({role})")
-        else:
-            updates = {}
-            if existing.get("role") != role:
-                updates["role"] = role
-            if SYNC_PASSWORDS and not verify_password(password, existing["password_hash"]):
-                updates["password_hash"] = hash_password(password)
-            if updates:
-                await db.users.update_one({"username": username}, {"$set": updates})
-                logger.info(f"[config] Updated user: {username} ({list(updates.keys())})")
+    async with AsyncSessionLocal() as session:
+        config_usernames = set()
+        for entry in USERS:
+            username = entry.get("username", "").strip().lower()
+            password = entry.get("password", "")
+            role = entry.get("role", "gestionnaire")
+            if not username or not password:
+                logger.warning(f"Skipping invalid user entry: {entry}")
+                continue
+            if role not in ROLES:
+                logger.warning(f"Unknown role '{role}' for '{username}'")
+                continue
+            config_usernames.add(username)
+            existing = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
+            if existing is None:
+                session.add(User(
+                    id=str(uuid.uuid4()),
+                    username=username,
+                    password_hash=hash_password(password),
+                    role=role,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                ))
+                logger.info(f"[config] Created user: {username} ({role})")
+            else:
+                changed = False
+                if existing.role != role:
+                    existing.role = role; changed = True
+                if SYNC_PASSWORDS and not verify_password(password, existing.password_hash):
+                    existing.password_hash = hash_password(password); changed = True
+                if changed:
+                    logger.info(f"[config] Updated user: {username}")
 
-    # Optionally remove users not in config (cascades to their files)
-    if SYNC_DELETE_MISSING:
-        cursor = db.users.find({}, {"_id": 0, "username": 1, "id": 1})
-        async for u in cursor:
-            if u["username"] not in config_usernames:
-                await db.users.delete_one({"id": u["id"]})
-                await db.files.delete_many({"created_by": u["id"]})
-                logger.info(f"[config] Removed user not in config: {u['username']}")
+        if SYNC_DELETE_MISSING:
+            all_users = (await session.execute(select(User))).scalars().all()
+            for u in all_users:
+                if u.username not in config_usernames:
+                    await session.execute(delete(FileModel).where(FileModel.created_by == u.id))
+                    await session.delete(u)
+                    logger.info(f"[config] Removed user not in config: {u.username}")
+
+        await session.commit()
 
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    client.close()
-
-
-# ---------- Mount router & CORS ----------
+# ---------- Mount ----------
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
