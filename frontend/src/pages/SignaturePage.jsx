@@ -106,15 +106,40 @@ export default function SignaturePage() {
       toast.error("Veuillez signer dans la zone prévue");
       return;
     }
-    // Build PNG with white background for visibility
+    // Build a TRANSPARENT cropped PNG of the signature only.
+    // 1) Find bounding box of non-transparent pixels
     const c = canvasRef.current;
+    const ctx = c.getContext("2d");
+    const w = c.width, h = c.height;
+    const img = ctx.getImageData(0, 0, w, h);
+    let minX = w, minY = h, maxX = 0, maxY = 0, found = false;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const a = img.data[(y * w + x) * 4 + 3];
+        if (a > 8) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+          found = true;
+        }
+      }
+    }
+    if (!found) {
+      toast.error("Signature illisible — recommencez");
+      return;
+    }
+    // Add small padding around the bounding box
+    const pad = 8;
+    minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+    maxX = Math.min(w - 1, maxX + pad); maxY = Math.min(h - 1, maxY + pad);
+    const cropW = maxX - minX + 1, cropH = maxY - minY + 1;
+
+    // 2) Copy the cropped region into a new TRANSPARENT canvas (no white fill)
     const tmp = document.createElement("canvas");
-    tmp.width = c.width; tmp.height = c.height;
+    tmp.width = cropW; tmp.height = cropH;
     const tctx = tmp.getContext("2d");
-    tctx.fillStyle = "#ffffff";
-    tctx.fillRect(0, 0, tmp.width, tmp.height);
-    tctx.drawImage(c, 0, 0);
-    // Re-stroke in black for PDF visibility regardless of theme
+    tctx.drawImage(c, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
     const dataUrl = tmp.toDataURL("image/png");
 
     setSubmitting(true);
@@ -122,7 +147,6 @@ export default function SignaturePage() {
       await api.post(`/access/sign/${encodeURIComponent(code)}`, { signature_data_url: dataUrl });
       setSigned(true);
       toast.success("Document signé avec succès");
-      // refresh signed file
       try {
         const { data } = await api.get(`/access/file/${encodeURIComponent(code)}`);
         setFile(data);
