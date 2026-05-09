@@ -136,6 +136,12 @@ class SignaturePositionUpdate(BaseModel):
     signature_position: str  # one of: top-left, top-center, top-right, middle-left, middle-center, middle-right, bottom-left, bottom-center, bottom-right
 
 
+class SelfUpdate(BaseModel):
+    username: Optional[str] = None
+    new_password: Optional[str] = None
+    current_password: str  # required to confirm any self-update
+
+
 VALID_POSITIONS = {
     "top-left", "top-center", "top-right",
     "middle-left", "middle-center", "middle-right",
@@ -189,6 +195,62 @@ async def logout(response: Response):
 async def me(user=Depends(get_current_admin)):
     role = user.get("role", "gestionnaire")
     return {**user, "role_label": get_role_label(role), "permissions": get_role_permissions(role)}
+
+
+@api_router.patch("/auth/me")
+async def update_me(payload: SelfUpdate, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    """Allow any authenticated user to update their own username and/or password.
+    Requires current password to confirm."""
+    db_user = (await db.execute(select(User).where(User.id == user["id"]))).scalar_one_or_none()
+    if not db_user:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if not verify_password(payload.current_password, db_user.password_hash):
+        raise HTTPException(401, "Mot de passe actuel incorrect")
+
+    changed = []
+    # Username change
+    if payload.username is not None:
+        new_username = payload.username.strip().lower()
+        if len(new_username) < 3:
+            raise HTTPException(400, "Nom d'utilisateur trop court (min 3 caractères)")
+        if new_username != db_user.username:
+            clash = (await db.execute(
+                select(User).where(User.username == new_username, User.id != db_user.id)
+            )).scalar_one_or_none()
+            if clash:
+                raise HTTPException(400, "Ce nom d'utilisateur existe déjà")
+            db_user.username = new_username
+            # Propagate to files
+            files_to_update = (await db.execute(
+                select(FileModel).where(FileModel.created_by == db_user.id)
+            )).scalars().all()
+            for f in files_to_update:
+                f.created_by_username = new_username
+            changed.append("username")
+
+    # Password change
+    if payload.new_password is not None and payload.new_password != "":
+        if len(payload.new_password) < 6:
+            raise HTTPException(400, "Nouveau mot de passe trop court (min 6 caractères)")
+        db_user.password_hash = hash_password(payload.new_password)
+        changed.append("password")
+
+    if not changed:
+        return {"ok": True, "updated": False}
+
+    await db.commit()
+    return {
+        "ok": True,
+        "updated": True,
+        "changed": changed,
+        "username": db_user.username,
+        "warning": (
+            "Note : ces changements seront écrasés au prochain redémarrage si SYNC_PASSWORDS=True dans config.py "
+            "et que le mot de passe défini dans config.py est différent. "
+            "Pensez à mettre à jour config.py également pour conserver vos changements après redémarrage."
+            if "password" in changed else None
+        ),
+    }
 
 
 # ---------- Files ----------
@@ -592,8 +654,53 @@ async def on_startup():
     await init_db()
 
     async with AsyncSessionLocal() as session:
+        # Step 1 — Sync the super_admin entry (always identified by role, not username)
+        super_in_config = next((e for e in USERS if e.get("role") == "super_admin"), None)
+        if super_in_config:
+            cfg_username = super_in_config.get("username", "").strip().lower()
+            cfg_password = super_in_config.get("password", "")
+            existing_super = (await session.execute(
+                select(User).where(User.role == "super_admin")
+            )).scalar_one_or_none()
+
+            if existing_super is None:
+                session.add(User(
+                    id=str(uuid.uuid4()),
+                    username=cfg_username,
+                    password_hash=hash_password(cfg_password),
+                    role="super_admin",
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                ))
+                logger.info(f"[config] Created super_admin: {cfg_username}")
+            else:
+                # Rename if needed (handles config.py changes)
+                if existing_super.username != cfg_username:
+                    # Make sure new username isn't already used by another user
+                    clash = (await session.execute(
+                        select(User).where(User.username == cfg_username, User.id != existing_super.id)
+                    )).scalar_one_or_none()
+                    if clash:
+                        logger.warning(
+                            f"[config] Cannot rename super_admin to '{cfg_username}': name already used. "
+                            f"Remove or rename the conflicting user first."
+                        )
+                    else:
+                        old = existing_super.username
+                        existing_super.username = cfg_username
+                        logger.info(f"[config] Renamed super_admin: {old} → {cfg_username}")
+                # Sync password
+                if SYNC_PASSWORDS and not verify_password(cfg_password, existing_super.password_hash):
+                    existing_super.password_hash = hash_password(cfg_password)
+                    logger.info(f"[config] Updated super_admin password")
+
+        # Step 2 — Sync gestionnaire entries by username
         config_usernames = set()
+        if super_in_config:
+            config_usernames.add(super_in_config.get("username", "").strip().lower())
+
         for entry in USERS:
+            if entry.get("role") == "super_admin":
+                continue  # already handled above
             username = entry.get("username", "").strip().lower()
             password = entry.get("password", "")
             role = entry.get("role", "gestionnaire")
@@ -615,12 +722,10 @@ async def on_startup():
                 ))
                 logger.info(f"[config] Created user: {username} ({role})")
             else:
-                changed = False
                 if existing.role != role:
-                    existing.role = role; changed = True
+                    existing.role = role
                 if SYNC_PASSWORDS and not verify_password(password, existing.password_hash):
-                    existing.password_hash = hash_password(password); changed = True
-                if changed:
+                    existing.password_hash = hash_password(password)
                     logger.info(f"[config] Updated user: {username}")
 
         if SYNC_DELETE_MISSING:

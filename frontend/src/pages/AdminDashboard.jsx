@@ -28,6 +28,7 @@ import { useAuth } from "../lib/auth";
 import { base64ToBlobUrl, revokeBlobUrl } from "../lib/pdf";
 import ManagersPanel from "./ManagersPanel";
 import DatabaseExplorer from "./DatabaseExplorer";
+import MyAccountDialog from "./MyAccountDialog";
 import ThemeToggle from "../components/ThemeToggle";
 import SignaturePositionPicker, { positionLabel } from "../components/SignaturePositionPicker";
 
@@ -257,13 +258,27 @@ export default function AdminDashboard() {
             </Badge>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground hidden sm:inline" data-testid="header-username">
-              {user?.username}
-            </span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="text-sm" data-testid="header-user-menu">
+                  {user?.username}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <MyAccountDialog
+                  trigger={
+                    <DropdownMenuItem onSelect={(e) => e.preventDefault()} data-testid="menu-my-account">
+                      Mon compte
+                    </DropdownMenuItem>
+                  }
+                />
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleLogout} data-testid="menu-logout">
+                  <LogOut className="w-4 h-4 mr-2" /> Déconnexion
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <ThemeToggle />
-            <Button variant="ghost" size="sm" onClick={handleLogout} data-testid="btn-logout">
-              <LogOut className="w-4 h-4 mr-1.5" /> Déconnexion
-            </Button>
           </div>
         </div>
       </header>
