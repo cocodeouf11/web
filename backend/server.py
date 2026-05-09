@@ -25,6 +25,9 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.utils import ImageReader
 
+# Configuration utilisateurs/rôles (modifiable via /app/backend/config.py)
+from config import USERS, ROLES, SYNC_PASSWORDS, SYNC_DELETE_MISSING, MAX_PDF_SIZE_MB, ACCESS_CODE_PREFIX
+
 # ---------- DB ----------
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -69,7 +72,16 @@ def generate_access_code() -> str:
     """Format DEV-XXXXX-XX with digits and uppercase letters."""
     part1 = ''.join(random.choices(string.digits, k=5))
     part2 = ''.join(random.choices(string.ascii_uppercase, k=2))
-    return f"DEV-{part1}-{part2}"
+    return f"{ACCESS_CODE_PREFIX}-{part1}-{part2}"
+
+
+def get_role_permissions(role: str) -> list:
+    """Return the permissions list for a given role (from config.ROLES)."""
+    return ROLES.get(role, {}).get("permissions", [])
+
+
+def get_role_label(role: str) -> str:
+    return ROLES.get(role, {}).get("label", role)
 
 
 async def get_current_admin(request: Request) -> dict:
@@ -161,7 +173,14 @@ async def login(payload: LoginInput, response: Response):
         max_age=8 * 3600,
         path="/",
     )
-    return {"id": user["id"], "username": user["username"], "role": user.get("role", "gestionnaire"), "token": token}
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "role": user.get("role", "gestionnaire"),
+        "role_label": get_role_label(user.get("role", "gestionnaire")),
+        "permissions": get_role_permissions(user.get("role", "gestionnaire")),
+        "token": token,
+    }
 
 
 @api_router.post("/auth/logout")
@@ -172,7 +191,12 @@ async def logout(response: Response):
 
 @api_router.get("/auth/me")
 async def me(user=Depends(get_current_admin)):
-    return user
+    role = user.get("role", "gestionnaire")
+    return {
+        **user,
+        "role_label": get_role_label(role),
+        "permissions": get_role_permissions(role),
+    }
 
 
 # ---------- Files (Admin) Endpoints ----------
@@ -184,8 +208,8 @@ async def upload_file(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Seuls les fichiers PDF sont acceptés")
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10MB)")
+    if len(content) > MAX_PDF_SIZE_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"Fichier trop volumineux (max {MAX_PDF_SIZE_MB}MB)")
 
     file_id = str(uuid.uuid4())
     doc = {
@@ -496,28 +520,47 @@ async def on_startup():
         partialFilterExpression={"access_code": {"$type": "string"}},
     )
 
-    # Seed super admin
-    username = ADMIN_USERNAME.strip().lower()
-    existing = await db.users.find_one({"username": username})
-    if existing is None:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "username": username,
-            "password_hash": hash_password(ADMIN_PASSWORD),
-            "role": "super_admin",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info(f"Seeded super_admin user: {username}")
-    else:
-        # Ensure existing admin has the super_admin role and correct password
-        updates = {}
-        if existing.get("role") != "super_admin":
-            updates["role"] = "super_admin"
-        if not verify_password(ADMIN_PASSWORD, existing["password_hash"]):
-            updates["password_hash"] = hash_password(ADMIN_PASSWORD)
-        if updates:
-            await db.users.update_one({"username": username}, {"$set": updates})
-            logger.info(f"Updated super_admin user: {username}")
+    # Seed/Sync users from config.py
+    config_usernames = set()
+    for entry in USERS:
+        username = entry.get("username", "").strip().lower()
+        password = entry.get("password", "")
+        role = entry.get("role", "gestionnaire")
+        if not username or not password:
+            logger.warning(f"Skipping invalid user entry in config: {entry}")
+            continue
+        if role not in ROLES:
+            logger.warning(f"Unknown role '{role}' for user '{username}' — skipped")
+            continue
+        config_usernames.add(username)
+        existing = await db.users.find_one({"username": username})
+        if existing is None:
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "username": username,
+                "password_hash": hash_password(password),
+                "role": role,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.info(f"[config] Created user: {username} ({role})")
+        else:
+            updates = {}
+            if existing.get("role") != role:
+                updates["role"] = role
+            if SYNC_PASSWORDS and not verify_password(password, existing["password_hash"]):
+                updates["password_hash"] = hash_password(password)
+            if updates:
+                await db.users.update_one({"username": username}, {"$set": updates})
+                logger.info(f"[config] Updated user: {username} ({list(updates.keys())})")
+
+    # Optionally remove users not in config (cascades to their files)
+    if SYNC_DELETE_MISSING:
+        cursor = db.users.find({}, {"_id": 0, "username": 1, "id": 1})
+        async for u in cursor:
+            if u["username"] not in config_usernames:
+                await db.users.delete_one({"id": u["id"]})
+                await db.files.delete_many({"created_by": u["id"]})
+                logger.info(f"[config] Removed user not in config: {u['username']}")
 
 
 @app.on_event("shutdown")
