@@ -23,6 +23,25 @@
         -->
         <title>Emergent | Fullstack App</title>
         <script>window.addEventListener("error",function(e){if(e.error instanceof DOMException&&e.error.name==="DataCloneError"&&e.message&&e.message.includes("PerformanceServerTiming")){e.stopImmediatePropagation();e.preventDefault()}},true);</script>
+        <script>
+          // Suppress benign ResizeObserver loop warnings (Radix UI / shadcn components trigger these)
+          (function(){
+            var msg = "ResizeObserver loop";
+            window.addEventListener("error", function(e){
+              if (e && e.message && (e.message.indexOf(msg) !== -1)) {
+                e.stopImmediatePropagation();
+                e.preventDefault();
+                return false;
+              }
+            }, true);
+            window.addEventListener("unhandledrejection", function(e){
+              if (e && e.reason && typeof e.reason.message === "string" && e.reason.message.indexOf(msg) !== -1) {
+                e.stopImmediatePropagation();
+                e.preventDefault();
+              }
+            });
+          })();
+        </script>
         <script src="https://assets.emergent.sh/scripts/emergent-main.js"></script>
     </head>
     <body>
