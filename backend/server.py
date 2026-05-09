@@ -516,6 +516,76 @@ async def delete_user(user_id: str, user=Depends(require_super_admin), db: Async
     return {"ok": True}
 
 
+# ---------- Database Explorer (super_admin only) ----------
+ALLOWED_TABLES = {"users", "files"}
+
+
+@api_router.get("/admin/db/tables")
+async def db_list_tables(user=Depends(require_super_admin), db: AsyncSession = Depends(get_db)):
+    """List app tables with row counts."""
+    out = []
+    for name in ALLOWED_TABLES:
+        model = User if name == "users" else FileModel
+        cnt = (await db.execute(select(func.count()).select_from(model))).scalar_one()
+        out.append({"name": name, "row_count": cnt})
+    return out
+
+
+@api_router.get("/admin/db/table/{table_name}")
+async def db_browse_table(
+    table_name: str,
+    limit: int = 50,
+    offset: int = 0,
+    user=Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Browse table rows (read-only). Sensitive columns are masked."""
+    if table_name not in ALLOWED_TABLES:
+        raise HTTPException(400, "Table inconnue")
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    if table_name == "users":
+        rows = (await db.execute(
+            select(User).order_by(User.created_at.desc()).offset(offset).limit(limit)
+        )).scalars().all()
+        total = (await db.execute(select(func.count()).select_from(User))).scalar_one()
+        columns = ["id", "username", "role", "password_hash", "created_at"]
+        data = []
+        for u in rows:
+            data.append({
+                "id": u.id,
+                "username": u.username,
+                "role": u.role,
+                "password_hash": (u.password_hash[:10] + "…[masqué]") if u.password_hash else "",
+                "created_at": u.created_at,
+            })
+        return {"table": table_name, "columns": columns, "rows": data, "total": total, "limit": limit, "offset": offset}
+
+    # files
+    rows = (await db.execute(
+        select(FileModel).order_by(FileModel.created_at.desc()).offset(offset).limit(limit)
+    )).scalars().all()
+    total = (await db.execute(select(func.count()).select_from(FileModel))).scalar_one()
+    columns = ["id", "filename", "size", "status", "access_code", "created_by_username",
+               "created_at", "signed_at", "signature_position", "content_b64"]
+    data = []
+    for f in rows:
+        data.append({
+            "id": f.id,
+            "filename": f.filename,
+            "size": f.size,
+            "status": f.status,
+            "access_code": f.access_code,
+            "created_by_username": f.created_by_username,
+            "created_at": f.created_at,
+            "signed_at": f.signed_at,
+            "signature_position": f.signature_position,
+            "content_b64": f"[{len(f.content_b64) if f.content_b64 else 0} chars]",
+        })
+    return {"table": table_name, "columns": columns, "rows": data, "total": total, "limit": limit, "offset": offset}
+
+
 # ---------- Startup ----------
 @app.on_event("startup")
 async def on_startup():

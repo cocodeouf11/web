@@ -20,12 +20,14 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
+  Database, ArrowDownUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { base64ToBlobUrl, revokeBlobUrl } from "../lib/pdf";
 import ManagersPanel from "./ManagersPanel";
+import DatabaseExplorer from "./DatabaseExplorer";
 import ThemeToggle from "../components/ThemeToggle";
 import SignaturePositionPicker, { positionLabel } from "../components/SignaturePositionPicker";
 
@@ -65,6 +67,7 @@ export default function AdminDashboard() {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("created_desc");  // created_desc | created_asc | signed_desc | signed_asc
   const [search, setSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -99,7 +102,7 @@ export default function AdminDashboard() {
   }), [files]);
 
   const filtered = useMemo(() => {
-    let list = files;
+    let list = [...files];
     if (filter === "signed") list = list.filter((f) => f.status === "signed");
     if (filter === "unsigned") list = list.filter((f) => f.status === "unsigned");
     if (search.trim()) {
@@ -109,8 +112,29 @@ export default function AdminDashboard() {
         (f.access_code || "").toLowerCase().includes(s)
       );
     }
+    // Sort
+    const cmp = (a, b, key) => {
+      const va = a[key] || "";
+      const vb = b[key] || "";
+      if (!va && vb) return 1;
+      if (va && !vb) return -1;
+      if (va < vb) return -1;
+      if (va > vb) return 1;
+      return 0;
+    };
+    if (sortBy === "created_desc") list.sort((a, b) => cmp(b, a, "created_at"));
+    else if (sortBy === "created_asc") list.sort((a, b) => cmp(a, b, "created_at"));
+    else if (sortBy === "signed_desc") list.sort((a, b) => cmp(b, a, "signed_at"));
+    else if (sortBy === "signed_asc") list.sort((a, b) => cmp(a, b, "signed_at"));
     return list;
-  }, [files, filter, search]);
+  }, [files, filter, search, sortBy]);
+
+  const sortLabel = {
+    created_desc: "Plus récent",
+    created_asc: "Plus ancien",
+    signed_desc: "Signés (récent)",
+    signed_asc: "Signés (ancien)",
+  }[sortBy];
 
   const handleUpload = async (e) => {
     e.preventDefault();
@@ -265,6 +289,9 @@ export default function AdminDashboard() {
               <TabsTrigger value="managers" className="rounded-lg data-[state=active]:bg-card data-[state=active]:shadow-sm" data-testid="tab-managers">
                 <Users className="w-4 h-4 mr-2" strokeWidth={1.6} /> Gestionnaires
               </TabsTrigger>
+              <TabsTrigger value="database" className="rounded-lg data-[state=active]:bg-card data-[state=active]:shadow-sm" data-testid="tab-database">
+                <Database className="w-4 h-4 mr-2" strokeWidth={1.6} /> Base de données
+              </TabsTrigger>
             </TabsList>
           )}
 
@@ -314,6 +341,20 @@ export default function AdminDashboard() {
                       <DropdownMenuItem onClick={() => setFilter("all")} data-testid="filter-all">Tous</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => setFilter("signed")} data-testid="filter-signed">Signés</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => setFilter("unsigned")} data-testid="filter-unsigned">Non signés</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm" className="h-10 rounded-lg" data-testid="btn-sort">
+                        <ArrowDownUp className="w-4 h-4 mr-1.5" /> {sortLabel}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuItem onClick={() => setSortBy("created_desc")} data-testid="sort-created-desc">Date d'ajout · Plus récent</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setSortBy("created_asc")} data-testid="sort-created-asc">Date d'ajout · Plus ancien</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => setSortBy("signed_desc")} data-testid="sort-signed-desc">Date de signature · Plus récent</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setSortBy("signed_asc")} data-testid="sort-signed-asc">Date de signature · Plus ancien</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -496,6 +537,12 @@ export default function AdminDashboard() {
           {user?.role === "super_admin" && (
             <TabsContent value="managers" className="mt-0">
               <ManagersPanel />
+            </TabsContent>
+          )}
+
+          {user?.role === "super_admin" && (
+            <TabsContent value="database" className="mt-0">
+              <DatabaseExplorer />
             </TabsContent>
           )}
         </Tabs>

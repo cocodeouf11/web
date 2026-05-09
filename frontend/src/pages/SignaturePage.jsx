@@ -45,7 +45,7 @@ export default function SignaturePage() {
     };
   }, [code, navigate]);
 
-  // Setup canvas
+  // Setup canvas — ALWAYS white background, ALWAYS black signature for PDF readability
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
@@ -58,20 +58,12 @@ export default function SignaturePage() {
       ctx.scale(dpr, dpr);
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      // Adaptive stroke color based on theme
-      const isDark = document.documentElement.classList.contains("dark");
-      ctx.strokeStyle = isDark ? "#f1f5f9" : "#0a0a0a";
+      ctx.strokeStyle = "#0a0a0a";  // always black
       ctx.lineWidth = 2.2;
     };
     setup();
     window.addEventListener("resize", setup);
-    // re-setup if theme toggles
-    const observer = new MutationObserver(setup);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => {
-      window.removeEventListener("resize", setup);
-      observer.disconnect();
-    };
+    return () => window.removeEventListener("resize", setup);
   }, [file, signed]);
 
   const getPos = (e) => {

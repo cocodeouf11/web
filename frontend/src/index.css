@@ -58,9 +58,10 @@ h1, h2, h3, h4, h5, h6, .font-display {
 .signature-canvas {
     touch-action: none;
     cursor: crosshair;
+    /* Always light/white background regardless of theme so signature remains readable */
     background:
-        linear-gradient(transparent 31px, hsl(var(--border)) 31px, hsl(var(--border)) 32px, transparent 32px) 0 0/100% 32px,
-        hsl(var(--card));
+        linear-gradient(transparent 31px, #e2e8f0 31px, #e2e8f0 32px, transparent 32px) 0 0/100% 32px,
+        #ffffff;
 }
 
 @layer base {
