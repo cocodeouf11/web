@@ -44,6 +44,8 @@ class File(Base):
     parent_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)  # linked docs
     fields: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of field defs
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # within group
+    # Sprint 3 additions
+    signed_filename: Mapped[str | None] = mapped_column(String(300), nullable=True)  # custom name applied after signing
 
 
 class DocumentType(Base):
@@ -88,6 +90,10 @@ async def init_db():
                 await conn.execute(text(
                     "ALTER TABLE files ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
                 ))
+            if "signed_filename" not in col_names:
+                await conn.execute(text(
+                    "ALTER TABLE files ADD COLUMN signed_filename VARCHAR(300)"
+                ))
         except Exception:
             pass
 
@@ -125,6 +131,7 @@ def file_to_dict(f: File, include_content: bool = False) -> dict:
         "parent_file_id": f.parent_file_id,
         "fields": fields_list,
         "sort_order": f.sort_order or 0,
+        "signed_filename": f.signed_filename,
     }
     if include_content:
         d["content_b64"] = f.content_b64

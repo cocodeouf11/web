@@ -20,7 +20,7 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
-  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move,
+  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move, FileCheck2, Files,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
@@ -87,6 +87,8 @@ export default function AdminDashboard() {
   const [linkParent, setLinkParent] = useState(null);  // file to link a new doc to
   const [linkType, setLinkType] = useState("Devis");
   const [linkUploading, setLinkUploading] = useState(false);
+  const [linkMode, setLinkMode] = useState("upload");  // 'upload' | 'existing'
+  const [linkExistingChild, setLinkExistingChild] = useState("");
   const [customPosFile, setCustomPosFile] = useState(null);  // file for free drag&drop signature placement
   const linkFileRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -311,6 +313,21 @@ export default function AdminDashboard() {
   const handleLinkUpload = async (e) => {
     e.preventDefault();
     if (!linkParent) return;
+    if (linkMode === "existing") {
+      if (!linkExistingChild) { toast.error("Sélectionnez un document existant"); return; }
+      setLinkUploading(true);
+      try {
+        await api.post(`/files/${linkParent.id}/link-existing`, { child_id: linkExistingChild });
+        toast.success("Document lié au dossier");
+        setLinkParent(null); setLinkExistingChild(""); setLinkMode("upload");
+        await loadFiles();
+      } catch (err) {
+        toast.error(formatApiError(err.response?.data?.detail) || "Erreur");
+      } finally {
+        setLinkUploading(false);
+      }
+      return;
+    }
     const f = linkFileRef.current?.files?.[0];
     if (!f) { toast.error("Sélectionnez un PDF"); return; }
     if (!f.name.toLowerCase().endsWith(".pdf")) { toast.error("PDF uniquement"); return; }
@@ -330,6 +347,19 @@ export default function AdminDashboard() {
       toast.error(formatApiError(err.response?.data?.detail) || "Erreur");
     } finally {
       setLinkUploading(false);
+    }
+  };
+
+  const handleLinkAttestation = async (file) => {
+    try {
+      await api.post(`/files/${file.id}/link-attestation`);
+      toast.success("Attestation Simplifiée liée", {
+        description: "Les champs Nom, Prénom, Adresse, Code postal, Commune, Fait à et la signature seront remplis lors de la signature.",
+        duration: 6000,
+      });
+      await loadFiles();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
     }
   };
 
@@ -645,6 +675,11 @@ export default function AdminDashboard() {
                                     <Paperclip className="w-4 h-4 mr-2" /> Lier un autre document
                                   </DropdownMenuItem>
                                 )}
+                                {!f.parent_file_id && f.status !== "signed" && (
+                                  <DropdownMenuItem onClick={() => handleLinkAttestation(f)} data-testid={`menu-link-attestation-${f.id}`}>
+                                    <FileCheck2 className="w-4 h-4 mr-2" /> Lier Attestation Simplifiée
+                                  </DropdownMenuItem>
+                                )}
                                 <DropdownMenuItem onClick={() => openTypeEdit(f)} data-testid={`menu-type-${f.id}`}>
                                   <Tag className="w-4 h-4 mr-2" /> Modifier le type
                                 </DropdownMenuItem>
@@ -799,60 +834,129 @@ export default function AdminDashboard() {
       </Dialog>
 
       {/* Link Document dialog */}
-      <Dialog open={!!linkParent} onOpenChange={(o) => !o && setLinkParent(null)}>
+      <Dialog open={!!linkParent} onOpenChange={(o) => {
+        if (!o) { setLinkParent(null); setLinkExistingChild(""); setLinkMode("upload"); }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display tracking-tight">Lier un autre document</DialogTitle>
             <DialogDescription>
-              Le PDF ajouté partagera le même code d'accès que <span className="font-medium">{linkParent?.filename}</span>. Le signataire les signera tous en une seule fois.
+              Le document partagera le code d'accès de <span className="font-medium">{linkParent?.filename}</span>. Tout sera signé en une seule action. Le PDF lié signé sera enregistré comme <span className="font-mono text-xs">{"{" }devis{ "}"}+{"{"}fichier_lié{"}"}.pdf</span>.
             </DialogDescription>
           </DialogHeader>
+
+          {/* Mode tabs */}
+          <div className="flex p-1 bg-muted rounded-lg" data-testid="link-mode-tabs">
+            <button
+              type="button"
+              onClick={() => setLinkMode("upload")}
+              className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                linkMode === "upload" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"
+              }`}
+              data-testid="link-tab-upload"
+            >
+              <Upload className="w-3.5 h-3.5 inline mr-1.5" /> Téléverser nouveau
+            </button>
+            <button
+              type="button"
+              onClick={() => setLinkMode("existing")}
+              className={`flex-1 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                linkMode === "existing" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground"
+              }`}
+              data-testid="link-tab-existing"
+            >
+              <Files className="w-3.5 h-3.5 inline mr-1.5" /> Choisir existant
+            </button>
+          </div>
+
           <form onSubmit={handleLinkUpload} className="space-y-4" data-testid="link-form">
-            <label className="block">
-              <div className="border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-brand transition-colors cursor-pointer">
-                <Paperclip className="w-7 h-7 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
-                <div className="text-sm font-medium text-foreground">Choisir un PDF à lier</div>
-                <div className="text-xs text-muted-foreground mt-1">10 MB max</div>
-                <input
-                  ref={linkFileRef}
-                  type="file"
-                  accept="application/pdf"
-                  className="hidden"
-                  data-testid="input-link-file"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) toast.info(`Sélectionné : ${f.name}`);
-                  }}
-                />
+            {linkMode === "upload" ? (
+              <>
+                <label className="block">
+                  <div className="border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-brand transition-colors cursor-pointer">
+                    <Paperclip className="w-7 h-7 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
+                    <div className="text-sm font-medium text-foreground">Choisir un PDF à lier</div>
+                    <div className="text-xs text-muted-foreground mt-1">10 MB max</div>
+                    <input
+                      ref={linkFileRef}
+                      type="file"
+                      accept="application/pdf"
+                      className="hidden"
+                      data-testid="input-link-file"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) toast.info(`Sélectionné : ${f.name}`);
+                      }}
+                    />
+                  </div>
+                </label>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground mb-2">
+                    <Tag className="w-3 h-3 inline mr-1" /> Type de document
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {documentTypes.map((t) => (
+                      <button
+                        key={t.id} type="button"
+                        onClick={() => setLinkType(t.name)}
+                        className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                          linkType === t.name
+                            ? "bg-brand text-white border-brand"
+                            : "bg-card text-foreground border-border hover:border-foreground/30"
+                        }`}
+                        data-testid={`link-type-${t.name}`}
+                      >
+                        {t.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-2 max-h-64 overflow-y-auto" data-testid="link-existing-list">
+                {files
+                  .filter((x) =>
+                    x.id !== linkParent?.id &&
+                    !x.parent_file_id &&
+                    x.status !== "signed"
+                  )
+                  .map((x) => (
+                    <button
+                      key={x.id}
+                      type="button"
+                      onClick={() => setLinkExistingChild(x.id)}
+                      className={`w-full text-left p-3 rounded-lg border transition-all ${
+                        linkExistingChild === x.id
+                          ? "bg-brand/10 border-brand"
+                          : "bg-card border-border hover:border-foreground/30"
+                      }`}
+                      data-testid={`link-existing-${x.id}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-brand flex-shrink-0" strokeWidth={1.6} />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-foreground truncate">{x.filename}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {x.document_type} · {(x.size / 1024).toFixed(1)} KB
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                {files.filter((x) => x.id !== linkParent?.id && !x.parent_file_id && x.status !== "signed").length === 0 && (
+                  <div className="text-center text-sm text-muted-foreground py-8" data-testid="link-existing-empty">
+                    Aucun document disponible.
+                    <div className="text-xs mt-1">Les documents déjà liés ou signés sont exclus.</div>
+                  </div>
+                )}
               </div>
-            </label>
-            <div>
-              <div className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground mb-2">
-                <Tag className="w-3 h-3 inline mr-1" /> Type de document
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                {documentTypes.map((t) => (
-                  <button
-                    key={t.id} type="button"
-                    onClick={() => setLinkType(t.name)}
-                    className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
-                      linkType === t.name
-                        ? "bg-brand text-white border-brand"
-                        : "bg-card text-foreground border-border hover:border-foreground/30"
-                    }`}
-                    data-testid={`link-type-${t.name}`}
-                  >
-                    {t.name}
-                  </button>
-                ))}
-              </div>
-            </div>
+            )}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setLinkParent(null)} data-testid="btn-link-cancel">
                 Annuler
               </Button>
               <Button type="submit" disabled={linkUploading} className="bg-brand text-white" data-testid="btn-link-submit">
-                {linkUploading ? "Envoi…" : "Lier le document"}
+                {linkUploading ? "Envoi…" : linkMode === "existing" ? "Lier le document" : "Téléverser & lier"}
               </Button>
             </DialogFooter>
           </form>

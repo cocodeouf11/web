@@ -166,6 +166,11 @@ class LinkFileInput(BaseModel):
     parent_id: Optional[str] = None
 
 
+class LinkExistingInput(BaseModel):
+    """Link an existing file (child_id) under a parent."""
+    child_id: str
+
+
 class SignFullInput(BaseModel):
     """Used for signing with form fields + signature."""
     signature_data_url: Optional[str] = None
@@ -350,15 +355,21 @@ async def upload_file(
 
 
 def _attestation_fields():
-    """Preset form fields for Attestation documents (page 1, approximate positions)."""
+    """Preset form fields for Attestation Simplifiée Cerfa N°13948*05 (A4, 595x842pts).
+    All fields are on page 1, positioned on the dotted lines circled in red on the spec image.
+    """
     return [
-        {"name": "nom", "label": "Nom", "type": "text", "page": 1, "x": 220, "y": 650, "width": 280, "height": 18, "required": True},
-        {"name": "prenom", "label": "Prénom", "type": "text", "page": 1, "x": 220, "y": 620, "width": 280, "height": 18, "required": True},
-        {"name": "adresse", "label": "Adresse", "type": "text", "page": 1, "x": 220, "y": 590, "width": 340, "height": 18, "required": True},
-        {"name": "code_postal", "label": "Code postal", "type": "text", "page": 1, "x": 220, "y": 560, "width": 100, "height": 18, "required": True},
-        {"name": "commune", "label": "Commune", "type": "text", "page": 1, "x": 340, "y": 560, "width": 220, "height": 18, "required": True},
-        {"name": "fait_a", "label": "Fait à", "type": "text", "page": 1, "x": 220, "y": 200, "width": 220, "height": 18, "required": True},
-        {"name": "le_date", "label": "Le", "type": "date_auto", "page": 1, "x": 460, "y": 200, "width": 100, "height": 18, "required": False},
+        # Identité (top section)
+        {"name": "nom",         "label": "Nom",         "type": "text", "page": 1, "x": 85,  "y": 683, "width": 195, "height": 14, "required": True},
+        {"name": "prenom",      "label": "Prénom",      "type": "text", "page": 1, "x": 360, "y": 683, "width": 200, "height": 14, "required": True},
+        {"name": "adresse",     "label": "Adresse",     "type": "text", "page": 1, "x": 110, "y": 673, "width": 170, "height": 14, "required": True},
+        {"name": "code_postal", "label": "Code postal", "type": "text", "page": 1, "x": 220, "y": 673, "width": 100, "height": 14, "required": True},
+        {"name": "commune",     "label": "Commune",     "type": "text", "page": 1, "x": 410, "y": 673, "width": 150, "height": 14, "required": True},
+        # Bottom (Fait à / Le / Signature)
+        {"name": "fait_a",      "label": "Fait à",      "type": "text",      "page": 1, "x": 285, "y": 163, "width": 160, "height": 14, "required": True},
+        {"name": "le_date",     "label": "Le",          "type": "date_auto", "page": 1, "x": 475, "y": 163, "width": 80,  "height": 14, "required": False},
+        # Signature anchor (placed by default just below the "Signature du client" line)
+        {"name": "__signature__","label":"Signature",   "type": "signature", "page": 1, "x": 320, "y": 70,  "width": 210, "height": 60, "required": True},
     ]
 
 
@@ -393,8 +404,10 @@ async def download_file(file_id: str, signed: bool = False, user=Depends(get_cur
     f = (await db.execute(q)).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Fichier introuvable")
-    content_b64 = f.signed_content_b64 if signed and f.signed_content_b64 else f.content_b64
-    return {"filename": f.filename, "content_b64": content_b64}
+    use_signed = signed and f.signed_content_b64
+    content_b64 = f.signed_content_b64 if use_signed else f.content_b64
+    filename = f.signed_filename if (use_signed and f.signed_filename) else f.filename
+    return {"filename": filename, "content_b64": content_b64}
 
 
 @api_router.delete("/files/{file_id}")
@@ -526,6 +539,119 @@ async def list_linked(file_id: str, user=Depends(get_current_admin), db: AsyncSe
     return [file_to_dict(c) for c in children]
 
 
+@api_router.post("/files/{file_id}/link-existing")
+async def link_existing_file(
+    file_id: str,
+    payload: LinkExistingInput,
+    user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Attach an EXISTING (already uploaded) file as child of the parent file_id.
+    Both must be visible to the user; child must not already have a parent.
+    """
+    parent_q = select(FileModel).where(FileModel.id == file_id)
+    parent_q = _files_filter(parent_q, user)
+    parent = (await db.execute(parent_q)).scalar_one_or_none()
+    if not parent:
+        raise HTTPException(404, "Document parent introuvable")
+    if parent.status == "signed":
+        raise HTTPException(400, "Document parent déjà signé")
+    # The actual parent is the parent's parent if any (single-level grouping)
+    actual_parent_id = parent.parent_file_id or parent.id
+
+    child_q = select(FileModel).where(FileModel.id == payload.child_id)
+    child_q = _files_filter(child_q, user)
+    child = (await db.execute(child_q)).scalar_one_or_none()
+    if not child:
+        raise HTTPException(404, "Document à lier introuvable")
+    if child.id == actual_parent_id:
+        raise HTTPException(400, "Impossible de lier un document à lui-même")
+    if child.status == "signed":
+        raise HTTPException(400, "Document déjà signé — impossible à lier")
+    if child.parent_file_id and child.parent_file_id != actual_parent_id:
+        raise HTTPException(400, "Ce document est déjà lié à un autre dossier")
+    # If the child has its own children, refuse (we keep one-level grouping)
+    has_kids = (await db.execute(
+        select(func.count()).select_from(FileModel).where(FileModel.parent_file_id == child.id)
+    )).scalar_one()
+    if has_kids:
+        raise HTTPException(400, "Ce document possède déjà ses propres documents liés — détachez-les d'abord")
+    # Remove access code from child (it shares the parent's now)
+    child.access_code = None
+    child.parent_file_id = actual_parent_id
+    # Compute sort_order
+    existing = (await db.execute(
+        select(func.count()).select_from(FileModel).where(FileModel.parent_file_id == actual_parent_id)
+    )).scalar_one()
+    child.sort_order = existing  # appended last (no +1 because count includes itself if any)
+    await db.commit()
+    return {"ok": True, "child_id": child.id, "parent_id": actual_parent_id}
+
+
+@api_router.post("/files/{file_id}/link-attestation")
+async def link_attestation_simplifiee(
+    file_id: str,
+    user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Auto-link an Attestation Simplifiée (Cerfa N°13948*05) as child of the given file.
+    The attestation template ships with the app and contains preset fields (Nom, Prénom,
+    Adresse, Code postal, Commune, Fait à, Le + Signature) on page 1.
+    """
+    import json as _json
+    parent_q = select(FileModel).where(FileModel.id == file_id)
+    parent_q = _files_filter(parent_q, user)
+    parent = (await db.execute(parent_q)).scalar_one_or_none()
+    if not parent:
+        raise HTTPException(404, "Document parent introuvable")
+    if parent.status == "signed":
+        raise HTTPException(400, "Document parent déjà signé")
+    actual_parent_id = parent.parent_file_id or parent.id
+
+    # Refuse if an attestation is already linked under this group
+    already = (await db.execute(
+        select(FileModel).where(
+            FileModel.parent_file_id == actual_parent_id,
+            FileModel.document_type == "Attestation Simplifiée",
+        )
+    )).scalar_one_or_none()
+    if already:
+        raise HTTPException(400, "Une Attestation Simplifiée est déjà liée à ce dossier")
+
+    tpl_path = ROOT_DIR / "templates" / "attestation_simplifiee.pdf"
+    if not tpl_path.exists():
+        raise HTTPException(500, "Modèle d'attestation introuvable sur le serveur")
+    content = tpl_path.read_bytes()
+    content_b64 = base64.b64encode(content).decode("utf-8")
+
+    existing_children = (await db.execute(
+        select(func.count()).select_from(FileModel).where(FileModel.parent_file_id == actual_parent_id)
+    )).scalar_one()
+
+    file_id_new = str(uuid.uuid4())
+    new_file = FileModel(
+        id=file_id_new,
+        filename="attestation_simplifiee.pdf",
+        content_b64=content_b64,
+        size=len(content),
+        status="unsigned",
+        access_code=None,
+        created_by=user["id"],
+        created_by_username=user["username"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+        signed_at=None,
+        signed_content_b64=None,
+        signature_position="bottom-center",
+        document_type="Attestation Simplifiée",
+        parent_file_id=actual_parent_id,
+        fields=_json.dumps(_attestation_fields()),
+        sort_order=existing_children + 1,
+    )
+    db.add(new_file)
+    await db.commit()
+    return file_to_dict(new_file)
+
+
 # ---------- Document Types (managed by any authenticated user, can be created by gestionnaires too) ----------
 @api_router.get("/document-types")
 async def list_document_types(user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
@@ -625,9 +751,13 @@ async def get_file_by_code(code: str, db: AsyncSession = Depends(get_db)):
     all_files = [f] + list(children)
 
     def file_payload(file_obj):
-        content_b64 = file_obj.signed_content_b64 if file_obj.status == "signed" and file_obj.signed_content_b64 else file_obj.content_b64
+        is_signed = file_obj.status == "signed" and file_obj.signed_content_b64
+        content_b64 = file_obj.signed_content_b64 if is_signed else file_obj.content_b64
         d = file_to_dict(file_obj)
         d["content_b64"] = content_b64
+        # Use signed_filename for display when applicable
+        if is_signed and file_obj.signed_filename:
+            d["filename"] = file_obj.signed_filename
         return d
 
     return {
@@ -688,6 +818,7 @@ def _build_overlay_pdf(pdf_bytes: bytes, signature_png_bytes: bytes = None, posi
         width = float(media.width); height = float(media.height)
         overlay_buf = io.BytesIO()
         c = rl_canvas.Canvas(overlay_buf, pagesize=(width, height))
+        has_content = False  # track whether anything was drawn
 
         # Draw text fields on this page
         for fd in fields_by_page.get(i, []):
@@ -697,16 +828,17 @@ def _build_overlay_pdf(pdf_bytes: bytes, signature_png_bytes: bytes = None, posi
             value = field_values.get(name, "")
             if fd.get("type") == "date_auto":
                 value = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+            if value == "" or value is None:
+                continue  # skip empty fields, don't dirty the overlay
             x = float(fd.get("x", 100))
             y = float(fd.get("y", 100))
             w = float(fd.get("width", 200))
             _draw_text_field(c, x, y, w, value, font_size=10)
+            has_content = True
 
         # Draw signature
-        place_sig_here = False
         if sig_img is not None:
             if sig_field is not None and i == max(0, int(sig_field.get("page", 1)) - 1):
-                place_sig_here = True
                 # Use the field's x/y/width/height
                 target_w = float(sig_field.get("width", 220))
                 sw, sh = sig_img.size
@@ -717,14 +849,17 @@ def _build_overlay_pdf(pdf_bytes: bytes, signature_png_bytes: bytes = None, posi
                 c.drawImage(ImageReader(sig_img), x, y, width=target_w, height=target_h, mask='auto')
                 c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
                 c.drawString(x, y - 10, f"Signé le {timestamp}")
+                has_content = True
             elif sig_field is None and i == num_pages - 1:
                 # Fallback: use position (9-pos system) on last page
                 sw, sh = sig_img.size
                 target_w = min(220.0, width * 0.4)
                 aspect = sh / sw if sw else 1
                 target_h = target_w * aspect
-                parts = position.split("-") if "-" in position else ["bottom", "right"]
-                v_pos = parts[0]; h_pos = parts[1]
+                pos = position or "bottom-right"
+                parts = pos.split("-") if "-" in pos else ["bottom", "right"]
+                v_pos = parts[0] if len(parts) > 0 else "bottom"
+                h_pos = parts[1] if len(parts) > 1 else "right"
                 margin = 36.0
                 if h_pos == "left": x = margin
                 elif h_pos == "center": x = (width - target_w) / 2
@@ -736,11 +871,15 @@ def _build_overlay_pdf(pdf_bytes: bytes, signature_png_bytes: bytes = None, posi
                 c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
                 label_y = y - 10 if v_pos != "top" else y + target_h + 4
                 c.drawString(x, label_y, f"Signé le {timestamp}")
+                has_content = True
 
-        c.save()
-        overlay_reader = PdfReader(io.BytesIO(overlay_buf.getvalue()))
-        overlay_page = overlay_reader.pages[0]
-        page.merge_page(overlay_page)
+        if has_content:
+            # Force a page emission and save → guarantees overlay has at least 1 page
+            c.showPage()
+            c.save()
+            overlay_reader = PdfReader(io.BytesIO(overlay_buf.getvalue()))
+            if len(overlay_reader.pages) > 0:
+                page.merge_page(overlay_reader.pages[0])
         writer.add_page(page)
 
     out = io.BytesIO(); writer.write(out)
@@ -781,6 +920,8 @@ async def sign_files(code: str, payload: SignFullInput, db: AsyncSession = Depen
         field_values["fait_a"] = payload.fait_a
 
     now = datetime.now(timezone.utc).isoformat()
+    # Compute parent base name once (used to build "{parent}+{child}.pdf" for children)
+    parent_base = os.path.splitext(parent.filename or "document")[0]
     for f in all_files:
         if f.status == "signed":
             continue
@@ -801,6 +942,10 @@ async def sign_files(code: str, payload: SignFullInput, db: AsyncSession = Depen
         f.signed_content_b64 = base64.b64encode(signed_pdf).decode("utf-8")
         f.status = "signed"
         f.signed_at = now
+        # Build signed_filename: for child docs use "{parent_base}+{child_base}.pdf"
+        if f.id != parent.id and f.parent_file_id:
+            child_base = os.path.splitext(f.filename or "doc")[0]
+            f.signed_filename = f"{parent_base}+{child_base}.pdf"
 
     await db.commit()
     return {"ok": True, "status": "signed", "signed_at": now, "documents_signed": len(all_files)}
@@ -978,10 +1123,12 @@ async def on_startup():
     async with AsyncSessionLocal() as session:
         # Seed default document types if none exists
         existing_types = (await session.execute(select(DocumentType))).scalars().all()
+        existing_type_names = {t.name for t in existing_types}
         if not existing_types:
             defaults = [
                 ("Devis", "bottom-right"),
                 ("Attestation", "bottom-center"),
+                ("Attestation Simplifiée", "bottom-center"),
                 ("Contrat", "bottom-right"),
                 ("Bon de commande", "bottom-right"),
             ]
@@ -994,6 +1141,16 @@ async def on_startup():
                 ))
             await session.commit()
             logger.info(f"[seed] Created {len(defaults)} default document types")
+        elif "Attestation Simplifiée" not in existing_type_names:
+            # Upsert the new type when upgrading from older versions
+            session.add(DocumentType(
+                id=str(uuid.uuid4()),
+                name="Attestation Simplifiée",
+                default_signature_position="bottom-center",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            ))
+            await session.commit()
+            logger.info("[seed] Added 'Attestation Simplifiée' document type")
 
         # Step 1 — Sync the super_admin entry (always identified by role, not username)
         super_in_config = next((e for e in USERS if e.get("role") == "super_admin"), None)
