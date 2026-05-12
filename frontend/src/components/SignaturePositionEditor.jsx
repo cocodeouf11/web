@@ -29,7 +29,8 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
   const [renderSize, setRenderSize] = useState({ w: 0, h: 0 });
   const [pageHeightPts, setPageHeightPts] = useState(0);
   const [pageWidthPts, setPageWidthPts] = useState(0);
-  const [blobUrl, setBlobUrl] = useState(null);
+  const [blobUrl, setBlobUrl] = useState(null);  // eslint-disable-line no-unused-vars
+  const blobUrlRef = useRef(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -50,6 +51,7 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
         const url = base64ToBlobUrl(data.content_b64);
         if (!url) throw new Error("blob");
         setBlobUrl(url);
+        blobUrlRef.current = url;
         const doc = await pdfjsLib.getDocument({ url }).promise;
         if (cancelled) return;
         setPdfDoc(doc);
@@ -87,7 +89,10 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
     })();
     return () => {
       cancelled = true;
-      if (blobUrl) revokeBlobUrl(blobUrl);
+      if (blobUrlRef.current) {
+        revokeBlobUrl(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file?.id]);
