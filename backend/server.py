@@ -15,7 +15,7 @@ from typing import Optional, List
 
 import bcrypt
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File as UploadFileParam
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File as UploadFileParam, Form
 from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select, delete, func
@@ -25,7 +25,7 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.utils import ImageReader
 
-from db import init_db, AsyncSessionLocal, User, File as FileModel, user_to_dict, file_to_dict
+from db import init_db, AsyncSessionLocal, User, File as FileModel, DocumentType, user_to_dict, file_to_dict
 from config import USERS, ROLES, SYNC_PASSWORDS, SYNC_DELETE_MISSING, MAX_PDF_SIZE_MB, ACCESS_CODE_PREFIX
 
 # ---------- Constants ----------
@@ -140,6 +140,20 @@ class SelfUpdate(BaseModel):
     username: Optional[str] = None
     new_password: Optional[str] = None
     current_password: str  # required to confirm any self-update
+
+
+class DocumentTypeCreate(BaseModel):
+    name: str
+    default_signature_position: Optional[str] = "bottom-right"
+
+
+class DocumentTypeUpdate(BaseModel):
+    name: Optional[str] = None
+    default_signature_position: Optional[str] = None
+
+
+class FileTypeUpdate(BaseModel):
+    document_type: str
 
 
 VALID_POSITIONS = {
@@ -257,6 +271,7 @@ async def update_me(payload: SelfUpdate, user=Depends(get_current_admin), db: As
 @api_router.post("/files/upload")
 async def upload_file(
     file: UploadFile = UploadFileParam(...),
+    document_type: str = Form("Devis"),
     user=Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -265,6 +280,13 @@ async def upload_file(
     content = await file.read()
     if len(content) > MAX_PDF_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Fichier trop volumineux (max {MAX_PDF_SIZE_MB}MB)")
+
+    # Resolve document type and its default signature position
+    doc_type_name = (document_type or "Devis").strip() or "Devis"
+    default_pos = "bottom-right"
+    type_row = (await db.execute(select(DocumentType).where(DocumentType.name == doc_type_name))).scalar_one_or_none()
+    if type_row:
+        default_pos = type_row.default_signature_position
 
     file_id = str(uuid.uuid4())
     new_file = FileModel(
@@ -279,7 +301,8 @@ async def upload_file(
         created_at=datetime.now(timezone.utc).isoformat(),
         signed_at=None,
         signed_content_b64=None,
-        signature_position="bottom-right",
+        signature_position=default_pos,
+        document_type=doc_type_name,
     )
     db.add(new_file)
     await db.commit()
@@ -385,6 +408,106 @@ async def update_signature_position(
     f.signature_position = payload.signature_position
     await db.commit()
     return {"ok": True, "signature_position": payload.signature_position}
+
+
+@api_router.patch("/files/{file_id}/document-type")
+async def update_document_type(
+    file_id: str,
+    payload: FileTypeUpdate,
+    user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    new_type = (payload.document_type or "").strip()
+    if not new_type:
+        raise HTTPException(400, "Type invalide")
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
+        raise HTTPException(404, "Fichier introuvable")
+    f.document_type = new_type
+    # Apply the type's default position if the file is not signed yet and a type exists
+    if f.status != "signed":
+        type_row = (await db.execute(select(DocumentType).where(DocumentType.name == new_type))).scalar_one_or_none()
+        if type_row:
+            f.signature_position = type_row.default_signature_position
+    await db.commit()
+    return {"ok": True, "document_type": new_type, "signature_position": f.signature_position}
+
+
+# ---------- Document Types (managed by any authenticated user, can be created by gestionnaires too) ----------
+@api_router.get("/document-types")
+async def list_document_types(user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(DocumentType).order_by(DocumentType.name))).scalars().all()
+    out = []
+    for t in rows:
+        out.append({
+            "id": t.id,
+            "name": t.name,
+            "default_signature_position": t.default_signature_position,
+            "created_at": t.created_at,
+        })
+    return out
+
+
+@api_router.post("/document-types")
+async def create_document_type(payload: DocumentTypeCreate, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    name = payload.name.strip()
+    if not name or len(name) < 2 or len(name) > 50:
+        raise HTTPException(400, "Nom invalide (2-50 caractères)")
+    pos = payload.default_signature_position or "bottom-right"
+    if pos not in VALID_POSITIONS:
+        raise HTTPException(400, "Position par défaut invalide")
+    existing = (await db.execute(select(DocumentType).where(DocumentType.name == name))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(400, "Ce type existe déjà")
+    t = DocumentType(
+        id=str(uuid.uuid4()), name=name,
+        default_signature_position=pos,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db.add(t)
+    await db.commit()
+    return {"id": t.id, "name": t.name, "default_signature_position": t.default_signature_position}
+
+
+@api_router.patch("/document-types/{type_id}")
+async def update_document_type_endpoint(type_id: str, payload: DocumentTypeUpdate, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    t = (await db.execute(select(DocumentType).where(DocumentType.id == type_id))).scalar_one_or_none()
+    if not t:
+        raise HTTPException(404, "Type introuvable")
+    if payload.name is not None:
+        new_name = payload.name.strip()
+        if len(new_name) < 2 or len(new_name) > 50:
+            raise HTTPException(400, "Nom invalide")
+        if new_name != t.name:
+            clash = (await db.execute(select(DocumentType).where(DocumentType.name == new_name))).scalar_one_or_none()
+            if clash:
+                raise HTTPException(400, "Ce nom existe déjà")
+            await db.execute(
+                FileModel.__table__.update().where(FileModel.document_type == t.name).values(document_type=new_name)
+            )
+            t.name = new_name
+    if payload.default_signature_position is not None:
+        if payload.default_signature_position not in VALID_POSITIONS:
+            raise HTTPException(400, "Position invalide")
+        t.default_signature_position = payload.default_signature_position
+    await db.commit()
+    return {"ok": True}
+
+
+@api_router.delete("/document-types/{type_id}")
+async def delete_document_type(type_id: str, user=Depends(require_super_admin), db: AsyncSession = Depends(get_db)):
+    t = (await db.execute(select(DocumentType).where(DocumentType.id == type_id))).scalar_one_or_none()
+    if not t:
+        raise HTTPException(404, "Type introuvable")
+    # Reassign files of this type to "Devis"
+    await db.execute(
+        FileModel.__table__.update().where(FileModel.document_type == t.name).values(document_type="Devis")
+    )
+    await db.delete(t)
+    await db.commit()
+    return {"ok": True}
 
 
 # ---------- Signer (public) ----------
@@ -654,6 +777,25 @@ async def on_startup():
     await init_db()
 
     async with AsyncSessionLocal() as session:
+        # Seed default document types if none exists
+        existing_types = (await session.execute(select(DocumentType))).scalars().all()
+        if not existing_types:
+            defaults = [
+                ("Devis", "bottom-right"),
+                ("Attestation", "bottom-center"),
+                ("Contrat", "bottom-right"),
+                ("Bon de commande", "bottom-right"),
+            ]
+            for name, pos in defaults:
+                session.add(DocumentType(
+                    id=str(uuid.uuid4()),
+                    name=name,
+                    default_signature_position=pos,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                ))
+            await session.commit()
+            logger.info(f"[seed] Created {len(defaults)} default document types")
+
         # Step 1 — Sync the super_admin entry (always identified by role, not username)
         super_in_config = next((e for e in USERS if e.get("role") == "super_admin"), None)
         if super_in_config:

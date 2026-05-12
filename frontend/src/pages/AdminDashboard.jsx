@@ -20,7 +20,7 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
-  Database, ArrowDownUp,
+  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
@@ -30,6 +30,7 @@ import ManagersPanel from "./ManagersPanel";
 import DatabaseExplorer from "./DatabaseExplorer";
 import MyAccountDialog from "./MyAccountDialog";
 import ThemeToggle from "../components/ThemeToggle";
+import PdfViewer from "../components/PdfViewer";
 import SignaturePositionPicker, { positionLabel } from "../components/SignaturePositionPicker";
 
 function StatusBadge({ status }) {
@@ -72,9 +73,16 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState("");
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [previewFile, setPreviewFile] = useState(null); // {filename, blobUrl}
-  const [positionFile, setPositionFile] = useState(null); // for the position picker dialog
+  const [previewFile, setPreviewFile] = useState(null);
+  const [positionFile, setPositionFile] = useState(null);
   const [positionValue, setPositionValue] = useState("bottom-right");
+  const [typeFile, setTypeFile] = useState(null);  // file whose type is being edited
+  const [typeValue, setTypeValue] = useState("Devis");
+  const [uploadType, setUploadType] = useState("Devis");
+  const [documentTypes, setDocumentTypes] = useState([]);
+  const [typesManagerOpen, setTypesManagerOpen] = useState(false);
+  const [newTypeName, setNewTypeName] = useState("");
+  const [newTypePos, setNewTypePos] = useState("bottom-right");
   const fileInputRef = useRef(null);
 
   const loadFiles = async () => {
@@ -88,7 +96,14 @@ export default function AdminDashboard() {
     }
   };
 
-  useEffect(() => { loadFiles(); }, []);
+  const loadDocumentTypes = async () => {
+    try {
+      const { data } = await api.get("/document-types");
+      setDocumentTypes(data);
+    } catch { /* silent */ }
+  };
+
+  useEffect(() => { loadFiles(); loadDocumentTypes(); }, []);
 
   // cleanup blob URL on dialog close
   useEffect(() => {
@@ -152,11 +167,12 @@ export default function AdminDashboard() {
     try {
       const fd = new FormData();
       fd.append("file", f);
+      fd.append("document_type", uploadType);
       await api.post("/files/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
-      toast.success("Fichier ajouté avec succès", { description: f.name });
-      // reset + close + reload
+      toast.success("Fichier ajouté avec succès", { description: `${f.name} · ${uploadType}` });
       if (fileInputRef.current) fileInputRef.current.value = "";
       setUploadOpen(false);
+      setUploadType("Devis");
       await loadFiles();
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || "Erreur lors de l'upload");
@@ -230,6 +246,60 @@ export default function AdminDashboard() {
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
     }
+  };
+
+  const openTypeEdit = (file) => {
+    setTypeFile(file);
+    setTypeValue(file.document_type || "Devis");
+  };
+
+  const saveType = async () => {
+    if (!typeFile) return;
+    try {
+      await api.patch(`/files/${typeFile.id}/document-type`, { document_type: typeValue });
+      toast.success(`Type modifié : ${typeValue}`);
+      setTypeFile(null);
+      await loadFiles();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
+    }
+  };
+
+  const createType = async (e) => {
+    e?.preventDefault?.();
+    if (!newTypeName.trim()) return;
+    try {
+      await api.post("/document-types", {
+        name: newTypeName.trim(),
+        default_signature_position: newTypePos,
+      });
+      toast.success(`Type créé : ${newTypeName.trim()}`);
+      setNewTypeName(""); setNewTypePos("bottom-right");
+      await loadDocumentTypes();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
+    }
+  };
+
+  const deleteType = async (id, name) => {
+    try {
+      await api.delete(`/document-types/${id}`);
+      toast.success(`Type supprimé : ${name}`);
+      await loadDocumentTypes();
+      await loadFiles();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
+    }
+  };
+
+  const copyDirectLink = (file) => {
+    if (!file.access_code) {
+      toast.error("Générez d'abord un code d'accès");
+      return;
+    }
+    const link = `${window.location.origin}/sign/${encodeURIComponent(file.access_code)}`;
+    navigator.clipboard?.writeText(link).catch(() => {});
+    toast.success("Lien direct copié", { description: link, duration: 6000 });
   };
 
   const copyCode = (code) => {
@@ -399,6 +469,35 @@ export default function AdminDashboard() {
                           />
                         </div>
                       </label>
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground mb-2 flex items-center justify-between">
+                          <span><Tag className="w-3 h-3 inline mr-1" /> Type de document</span>
+                          <button
+                            type="button"
+                            onClick={() => setTypesManagerOpen(true)}
+                            className="text-brand hover:underline text-[10px] normal-case tracking-normal"
+                            data-testid="btn-manage-types"
+                          >
+                            <Settings className="w-3 h-3 inline mr-0.5" /> Gérer les types
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {documentTypes.map((t) => (
+                            <button
+                              key={t.id} type="button"
+                              onClick={() => setUploadType(t.name)}
+                              className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                                uploadType === t.name
+                                  ? "bg-brand text-white border-brand"
+                                  : "bg-card text-foreground border-border hover:border-foreground/30"
+                              }`}
+                              data-testid={`upload-type-${t.name}`}
+                            >
+                              {t.name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <DialogFooter>
                         <Button type="button" variant="outline" onClick={() => setUploadOpen(false)} data-testid="btn-upload-cancel">
                           Annuler
@@ -444,7 +543,12 @@ export default function AdminDashboard() {
                                 <FileText className="w-4 h-4 text-brand" strokeWidth={1.6} />
                               </div>
                               <div className="min-w-0">
-                                <div className="text-sm font-medium text-foreground truncate max-w-[280px]">{f.filename}</div>
+                                <div className="text-sm font-medium text-foreground truncate max-w-[280px] flex items-center gap-2">
+                                  <span className="truncate">{f.filename}</span>
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-brand/10 text-brand text-[10px] font-semibold uppercase tracking-wider flex-shrink-0">
+                                    <Tag className="w-2.5 h-2.5" /> {f.document_type || "Devis"}
+                                  </span>
+                                </div>
                                 <div className="text-xs text-muted-foreground">
                                   {(f.size / 1024).toFixed(1)} KB
                                   {user?.role === "super_admin" && f.created_by_username && (
@@ -497,6 +601,14 @@ export default function AdminDashboard() {
                               <DropdownMenuContent align="end">
                                 <DropdownMenuItem onClick={() => handlePreview(f)} data-testid={`menu-view-${f.id}`}>
                                   <Eye className="w-4 h-4 mr-2" /> Voir
+                                </DropdownMenuItem>
+                                {f.access_code && (
+                                  <DropdownMenuItem onClick={() => copyDirectLink(f)} data-testid={`menu-link-${f.id}`}>
+                                    <Link2 className="w-4 h-4 mr-2" /> Copier lien direct signataire
+                                  </DropdownMenuItem>
+                                )}
+                                <DropdownMenuItem onClick={() => openTypeEdit(f)} data-testid={`menu-type-${f.id}`}>
+                                  <Tag className="w-4 h-4 mr-2" /> Modifier le type
                                 </DropdownMenuItem>
                                 {f.status !== "signed" && (
                                   <DropdownMenuItem onClick={() => openPosition(f)} data-testid={`menu-position-${f.id}`}>
@@ -576,12 +688,7 @@ export default function AdminDashboard() {
           </DialogHeader>
           <div className="flex-1 bg-muted overflow-hidden">
             {previewFile?.blobUrl && (
-              <iframe
-                src={previewFile.blobUrl}
-                title={previewFile.filename}
-                className="w-full h-full border-0"
-                data-testid="pdf-preview-iframe"
-              />
+              <PdfViewer blobUrl={previewFile.blobUrl} filename={previewFile.filename} />
             )}
           </div>
         </DialogContent>
@@ -605,6 +712,102 @@ export default function AdminDashboard() {
             </Button>
             <Button onClick={savePosition} className="bg-brand text-white" data-testid="btn-position-save">
               Enregistrer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Document type change dialog */}
+      <Dialog open={!!typeFile} onOpenChange={(o) => !o && setTypeFile(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display tracking-tight">Type de document</DialogTitle>
+            <DialogDescription>
+              Modifier le type de "{typeFile?.filename}". La position par défaut du nouveau type sera appliquée si le document n'est pas encore signé.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="grid grid-cols-2 gap-2">
+              {documentTypes.map((t) => (
+                <button
+                  key={t.id} type="button"
+                  onClick={() => setTypeValue(t.name)}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                    typeValue === t.name
+                      ? "bg-brand text-white border-brand"
+                      : "bg-card text-foreground border-border hover:border-foreground/30"
+                  }`}
+                  data-testid={`type-select-${t.name}`}
+                >
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTypeFile(null)} data-testid="btn-type-cancel">
+              Annuler
+            </Button>
+            <Button onClick={saveType} className="bg-brand text-white" data-testid="btn-type-save">
+              Enregistrer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Types manager dialog */}
+      <Dialog open={typesManagerOpen} onOpenChange={setTypesManagerOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display tracking-tight">Gérer les types de documents</DialogTitle>
+            <DialogDescription>
+              Créez des types personnalisés (Devis, Attestation, Contrat…). Chaque type peut avoir une position par défaut de la signature.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2 max-h-[400px] overflow-y-auto">
+            <div className="space-y-2">
+              {documentTypes.map((t) => (
+                <div key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/40 border border-border">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">{t.name}</div>
+                    <div className="text-xs text-muted-foreground">Position défaut : {positionLabel(t.default_signature_position)}</div>
+                  </div>
+                  {user?.role === "super_admin" && (
+                    <Button
+                      size="sm" variant="ghost"
+                      className="h-8 w-8 p-0 text-destructive hover:bg-destructive/10"
+                      onClick={() => deleteType(t.id, t.name)}
+                      data-testid={`btn-type-delete-${t.name}`}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <form onSubmit={createType} className="border-t border-border pt-4 space-y-3">
+              <div className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground">
+                <Plus className="w-3 h-3 inline mr-1" /> Créer un nouveau type
+              </div>
+              <Input
+                placeholder="ex: Mandat, Procuration…"
+                value={newTypeName}
+                onChange={(e) => setNewTypeName(e.target.value)}
+                className="h-10 rounded-lg"
+                data-testid="input-new-type-name"
+              />
+              <div>
+                <div className="text-xs text-muted-foreground mb-2">Position par défaut de la signature</div>
+                <SignaturePositionPicker value={newTypePos} onChange={setNewTypePos} />
+              </div>
+              <Button type="submit" disabled={!newTypeName.trim()} className="w-full bg-brand text-white" data-testid="btn-create-type">
+                Créer le type
+              </Button>
+            </form>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTypesManagerOpen(false)} data-testid="btn-types-close">
+              Fermer
             </Button>
           </DialogFooter>
         </DialogContent>

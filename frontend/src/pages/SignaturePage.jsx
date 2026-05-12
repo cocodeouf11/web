@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
 import { base64ToBlobUrl, revokeBlobUrl } from "../lib/pdf";
 import ThemeToggle from "../components/ThemeToggle";
+import PdfViewer from "../components/PdfViewer";
 
 export default function SignaturePage() {
   const { code } = useParams();
@@ -231,7 +232,9 @@ export default function SignaturePage() {
               <span className="text-xs text-muted-foreground">PDF</span>
             </div>
             {pdfUrl ? (
-              <iframe src={pdfUrl} title={file.filename} className="flex-1 w-full bg-muted border-0" data-testid="pdf-iframe" />
+              <div className="flex-1 min-h-0" data-testid="pdf-iframe">
+                <PdfViewer blobUrl={pdfUrl} filename={file.filename} />
+              </div>
             ) : (
               <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
                 Impossible d'afficher le PDF

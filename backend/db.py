@@ -39,6 +39,16 @@ class File(Base):
     created_at: Mapped[str] = mapped_column(String(40), nullable=False)
     signed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     signature_position: Mapped[str] = mapped_column(String(20), nullable=False, default="bottom-right")
+    document_type: Mapped[str] = mapped_column(String(50), nullable=False, default="Devis", index=True)
+
+
+class DocumentType(Base):
+    __tablename__ = "document_types"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    default_signature_position: Mapped[str] = mapped_column(String(20), nullable=False, default="bottom-right")
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
 # Async engine + session factory
@@ -50,7 +60,7 @@ async def init_db():
     """Create tables if they don't exist + run light migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Light migration: add signature_position to existing files table if missing
+        # Light migrations
         from sqlalchemy import text
         try:
             cols = await conn.execute(text("PRAGMA table_info(files)"))
@@ -59,8 +69,11 @@ async def init_db():
                 await conn.execute(text(
                     "ALTER TABLE files ADD COLUMN signature_position VARCHAR(20) NOT NULL DEFAULT 'bottom-right'"
                 ))
+            if "document_type" not in col_names:
+                await conn.execute(text(
+                    "ALTER TABLE files ADD COLUMN document_type VARCHAR(50) NOT NULL DEFAULT 'Devis'"
+                ))
         except Exception:
-            # PRAGMA only works on SQLite; on other DBs use create_all (column already added by SQLAlchemy)
             pass
 
 
@@ -88,6 +101,7 @@ def file_to_dict(f: File, include_content: bool = False) -> dict:
         "created_at": f.created_at,
         "signed_at": f.signed_at,
         "signature_position": f.signature_position or "bottom-right",
+        "document_type": f.document_type or "Devis",
     }
     if include_content:
         d["content_b64"] = f.content_b64
