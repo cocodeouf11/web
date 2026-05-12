@@ -16,6 +16,7 @@ from typing import Optional, List
 import bcrypt
 import jwt
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File as UploadFileParam, Form
+from fastapi.responses import FileResponse, Response as FastAPIResponse
 from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select, delete, func
@@ -955,6 +956,36 @@ async def sign_files(code: str, payload: SignFullInput, db: AsyncSession = Depen
 @api_router.get("/")
 async def root():
     return {"message": "Devis Signature API", "ok": True}
+
+
+# ---------- PDF.js worker (served from backend to avoid manual deploy step) ----------
+_WORKER_CANDIDATES = [
+    ROOT_DIR.parent / "frontend" / "public" / "pdf.worker.min.mjs",
+    ROOT_DIR.parent / "frontend" / "node_modules" / "pdfjs-dist" / "build" / "pdf.worker.min.mjs",
+    ROOT_DIR.parent / "frontend" / "build" / "pdf.worker.min.mjs",
+    ROOT_DIR / "static" / "pdf.worker.min.mjs",
+]
+
+
+def _find_pdf_worker() -> Optional[Path]:
+    for p in _WORKER_CANDIDATES:
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+@api_router.get("/pdf-worker.mjs")
+async def pdf_worker():
+    """Serve the pdfjs worker bundled with the app — guarantees same-origin availability
+    regardless of how the frontend is deployed on Debian / Nginx / etc."""
+    p = _find_pdf_worker()
+    if not p:
+        raise HTTPException(404, "PDF.js worker not found on server")
+    return FileResponse(
+        p,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ---------- User Management ----------

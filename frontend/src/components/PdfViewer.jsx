@@ -3,8 +3,31 @@ import * as pdfjsLib from "pdfjs-dist";
 import { Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Download } from "lucide-react";
 import { Button } from "./ui/button";
 
-// Use the worker copied to /public/ at build time
-pdfjsLib.GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
+// Build the worker URL. Priority:
+//   1. Backend-served `/api/pdf-worker.mjs` (always same origin, no manual deploy needed)
+//   2. CDN unpkg fallback (only used if backend route 404s when fetched by pdfjs)
+// We set the backend URL directly and let pdfjs handle the fetch; if pdfjs fails to
+// import the worker module, we retry with the CDN URL.
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
+const PRIMARY_WORKER = `${BACKEND_URL}/api/pdf-worker.mjs`;
+const FALLBACK_WORKER = `https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
+
+let workerInitPromise = null;
+function ensureWorker() {
+  if (!workerInitPromise) {
+    workerInitPromise = Promise.resolve().then(() => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PRIMARY_WORKER;
+      return PRIMARY_WORKER;
+    });
+  }
+  return workerInitPromise;
+}
+
+// Swap to CDN if primary failed. Caller invokes this then retries.
+function switchToFallbackWorker() {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = FALLBACK_WORKER;
+  workerInitPromise = Promise.resolve(FALLBACK_WORKER);
+}
 
 /**
  * Reliable PDF viewer that renders pages to canvas with PDF.js.
@@ -25,9 +48,25 @@ export default function PdfViewer({ blobUrl, filename }) {
     setLoading(true); setError(null);
     let cancelled = false;
     (async () => {
-      try {
+      const tryLoad = async () => {
         const task = pdfjsLib.getDocument({ url: blobUrl });
-        const doc = await task.promise;
+        return await task.promise;
+      };
+      try {
+        await ensureWorker();
+        let doc;
+        try {
+          doc = await tryLoad();
+        } catch (firstErr) {
+          // If worker failed to import, try the CDN fallback once
+          const msg = String(firstErr?.message || firstErr);
+          if (/worker|dynamically imported|Failed to fetch/i.test(msg)) {
+            switchToFallbackWorker();
+            doc = await tryLoad();
+          } else {
+            throw firstErr;
+          }
+        }
         if (cancelled) return;
         setPdfDoc(doc);
         setNumPages(doc.numPages);

@@ -9,7 +9,21 @@ import api, { formatApiError } from "../lib/api";
 import { base64ToBlobUrl, revokeBlobUrl } from "../lib/pdf";
 import { toast } from "sonner";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.min.mjs`;
+// Worker loaded same way as PdfViewer — same-origin backend route with CDN fallback.
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
+const PRIMARY_WORKER = `${BACKEND_URL}/api/pdf-worker.mjs`;
+const FALLBACK_WORKER = `https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
+
+let workerInitPromise = null;
+function ensureWorker() {
+  if (!workerInitPromise) {
+    workerInitPromise = Promise.resolve().then(() => {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PRIMARY_WORKER;
+      return PRIMARY_WORKER;
+    });
+  }
+  return workerInitPromise;
+}
 
 const DEFAULT_BOX = { width: 220, height: 80 };
 
@@ -46,6 +60,7 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
     setLoading(true);
     (async () => {
       try {
+        await ensureWorker();
         const { data } = await api.get(`/files/${file.id}/download`);
         if (cancelled) return;
         const url = base64ToBlobUrl(data.content_b64);
