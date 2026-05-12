@@ -20,7 +20,7 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
-  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip,
+  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
@@ -32,6 +32,7 @@ import MyAccountDialog from "./MyAccountDialog";
 import ThemeToggle from "../components/ThemeToggle";
 import PdfViewer from "../components/PdfViewer";
 import SignaturePositionPicker, { positionLabel } from "../components/SignaturePositionPicker";
+import SignaturePositionEditor from "../components/SignaturePositionEditor";
 
 function StatusBadge({ status }) {
   if (status === "signed") {
@@ -86,6 +87,7 @@ export default function AdminDashboard() {
   const [linkParent, setLinkParent] = useState(null);  // file to link a new doc to
   const [linkType, setLinkType] = useState("Devis");
   const [linkUploading, setLinkUploading] = useState(false);
+  const [customPosFile, setCustomPosFile] = useState(null);  // file for free drag&drop signature placement
   const linkFileRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -586,7 +588,9 @@ export default function AdminDashboard() {
                                   {f.signature_position && f.status !== "signed" && (
                                     <span className="ml-2 inline-flex items-center gap-1 opacity-70">
                                       <MoveDiagonal className="w-3 h-3" />
-                                      {positionLabel(f.signature_position)}
+                                      {(f.fields || []).some((x) => x.type === "signature")
+                                        ? "Position personnalisée"
+                                        : positionLabel(f.signature_position)}
                                     </span>
                                   )}
                                 </div>
@@ -647,6 +651,11 @@ export default function AdminDashboard() {
                                 {f.status !== "signed" && (
                                   <DropdownMenuItem onClick={() => openPosition(f)} data-testid={`menu-position-${f.id}`}>
                                     <MoveDiagonal className="w-4 h-4 mr-2" /> Position signature
+                                  </DropdownMenuItem>
+                                )}
+                                {f.status !== "signed" && (
+                                  <DropdownMenuItem onClick={() => setCustomPosFile(f)} data-testid={`menu-custom-position-${f.id}`}>
+                                    <Move className="w-4 h-4 mr-2" /> Position personnalisée (drag &amp; drop)
                                   </DropdownMenuItem>
                                 )}
                                 <DropdownMenuItem onClick={() => handleToggleStatus(f)} data-testid={`menu-toggle-${f.id}`}>
@@ -788,6 +797,74 @@ export default function AdminDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Link Document dialog */}
+      <Dialog open={!!linkParent} onOpenChange={(o) => !o && setLinkParent(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display tracking-tight">Lier un autre document</DialogTitle>
+            <DialogDescription>
+              Le PDF ajouté partagera le même code d'accès que <span className="font-medium">{linkParent?.filename}</span>. Le signataire les signera tous en une seule fois.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleLinkUpload} className="space-y-4" data-testid="link-form">
+            <label className="block">
+              <div className="border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-brand transition-colors cursor-pointer">
+                <Paperclip className="w-7 h-7 mx-auto text-muted-foreground mb-2" strokeWidth={1.5} />
+                <div className="text-sm font-medium text-foreground">Choisir un PDF à lier</div>
+                <div className="text-xs text-muted-foreground mt-1">10 MB max</div>
+                <input
+                  ref={linkFileRef}
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  data-testid="input-link-file"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) toast.info(`Sélectionné : ${f.name}`);
+                  }}
+                />
+              </div>
+            </label>
+            <div>
+              <div className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground mb-2">
+                <Tag className="w-3 h-3 inline mr-1" /> Type de document
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {documentTypes.map((t) => (
+                  <button
+                    key={t.id} type="button"
+                    onClick={() => setLinkType(t.name)}
+                    className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                      linkType === t.name
+                        ? "bg-brand text-white border-brand"
+                        : "bg-card text-foreground border-border hover:border-foreground/30"
+                    }`}
+                    data-testid={`link-type-${t.name}`}
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setLinkParent(null)} data-testid="btn-link-cancel">
+                Annuler
+              </Button>
+              <Button type="submit" disabled={linkUploading} className="bg-brand text-white" data-testid="btn-link-submit">
+                {linkUploading ? "Envoi…" : "Lier le document"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom signature position editor */}
+      <SignaturePositionEditor
+        file={customPosFile}
+        onClose={() => setCustomPosFile(null)}
+        onSaved={() => { setCustomPosFile(null); loadFiles(); }}
+      />
 
       {/* Types manager dialog */}
       <Dialog open={typesManagerOpen} onOpenChange={setTypesManagerOpen}>

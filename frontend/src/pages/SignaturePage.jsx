@@ -295,50 +295,52 @@ export default function SignaturePage() {
             )}
           </div>
 
-          {/* Right panel: form fields + signature */}
+          {/* Right panel: unified signing card (fields + signature) */}
           <div className="lg:col-span-2 space-y-4">
-            {/* Form fields (if any) */}
-            {!signed && allFields.length > 0 && (
-              <div className="bg-card border border-border rounded-2xl p-6">
-                <div className="flex items-center gap-2 mb-4">
-                  <PenLine className="w-4 h-4 text-brand" strokeWidth={1.8} />
-                  <span className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground">Informations</span>
+            {!signed ? (
+              <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+                {/* Header */}
+                <div className="px-6 pt-6 pb-4 border-b border-border bg-gradient-to-b from-muted/30 to-transparent">
+                  <div className="flex items-center gap-2 mb-1">
+                    <PenLine className="w-4 h-4 text-brand" strokeWidth={1.8} />
+                    <span className="text-xs uppercase tracking-[0.12em] font-semibold text-muted-foreground">
+                      Signature du document
+                    </span>
+                  </div>
+                  <h3 className="font-display text-2xl font-medium text-foreground">
+                    {isMulti ? `Signer ${documents.length} documents` : "Signer le document"}
+                  </h3>
                 </div>
-                <div className="space-y-3">
-                  {allFields.map((f) => (
-                    <div key={f.name}>
-                      <Label className="text-foreground text-sm font-medium">
-                        {f.label} {f.required && <span className="text-destructive">*</span>}
-                      </Label>
-                      <Input
-                        value={fieldValues[f.name] || ""}
-                        onChange={(e) => setFieldValues((p) => ({ ...p, [f.name]: e.target.value }))}
-                        className="mt-1.5 h-10 rounded-lg"
-                        placeholder={f.label}
-                        data-testid={`input-field-${f.name}`}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
-            {/* Signature area */}
-            <div className="bg-card border border-border rounded-2xl p-6">
-              <div className="flex items-center gap-2 mb-1">
-                <PenLine className="w-4 h-4 text-brand" strokeWidth={1.8} />
-                <span className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground">Votre signature</span>
-              </div>
-              <h3 className="font-display text-xl font-medium text-foreground mb-4">
-                {signed ? "Signature enregistrée" : "Signez ci-dessous"}
-              </h3>
-              {signed ? (
-                <div className="flex items-center justify-center bg-muted/40 rounded-xl border border-border p-8">
-                  <CheckCircle2 className="w-10 h-10 text-emerald-500" strokeWidth={1.5} />
-                </div>
-              ) : (
-                <>
-                  <div className="relative rounded-xl overflow-hidden border-2 border-dashed border-border bg-card" style={{ minHeight: 180 }}>
+                {/* Fields */}
+                {allFields.length > 0 && (
+                  <div className="px-6 pt-5 space-y-3">
+                    {allFields.map((f) => (
+                      <div key={f.name} data-testid={`field-row-${f.name}`}>
+                        <Label className="text-foreground/90 text-xs font-medium uppercase tracking-wider">
+                          {f.label} {f.required && <span className="text-destructive">*</span>}
+                        </Label>
+                        <Input
+                          value={fieldValues[f.name] || ""}
+                          onChange={(e) => setFieldValues((p) => ({ ...p, [f.name]: e.target.value }))}
+                          className="mt-1.5 h-11 rounded-xl bg-muted/40 border-border focus:bg-card text-base"
+                          placeholder={f.label}
+                          data-testid={`input-field-${f.name}`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Signature pad */}
+                <div className="px-6 pt-5 pb-6">
+                  <Label className="text-foreground/90 text-xs font-medium uppercase tracking-wider">
+                    Votre signature <span className="text-destructive">*</span>
+                  </Label>
+                  <div
+                    className="relative rounded-2xl overflow-hidden border-2 border-border bg-white mt-1.5"
+                    style={{ minHeight: 200 }}
+                  >
                     <canvas
                       ref={canvasRef}
                       className="signature-canvas absolute inset-0 w-full h-full"
@@ -347,26 +349,59 @@ export default function SignaturePage() {
                       data-testid="signature-canvas"
                     />
                     {!hasDrawn && (
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <span className="text-muted-foreground/60 text-sm italic">Signez ici à la souris ou au doigt</span>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                        <PenLine className="w-6 h-6 text-slate-400 mb-1" strokeWidth={1.4} />
+                        <span className="text-slate-500 text-sm italic">Signez ici à la souris ou au doigt</span>
                       </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 mt-4">
-                    <Button type="button" variant="outline" onClick={clearCanvas} className="flex-1 h-11 rounded-xl" disabled={submitting} data-testid="btn-clear-signature">
+                  <p className="text-[11px] text-muted-foreground mt-2 text-center">
+                    Signez en noir sur fond transparent
+                  </p>
+
+                  <div className="flex items-center gap-3 mt-5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={clearCanvas}
+                      className="flex-1 h-11 rounded-xl"
+                      disabled={submitting}
+                      data-testid="btn-clear-signature"
+                    >
                       <Eraser className="w-4 h-4 mr-2" /> Effacer
                     </Button>
-                    <Button type="button" onClick={validateSignature} disabled={submitting || !hasDrawn} className="flex-1 h-11 rounded-xl bg-brand text-white" data-testid="btn-validate-signature">
-                      {submitting ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Validation…</>) : (<><CheckCircle2 className="w-4 h-4 mr-2" /> Valider {isMulti ? `(${documents.length} docs)` : ""}</>)}
+                    <Button
+                      type="button"
+                      onClick={validateSignature}
+                      disabled={submitting || !hasDrawn}
+                      className="flex-[1.5] h-11 rounded-xl bg-gradient-to-r from-brand to-blue-600 text-white shadow-md hover:shadow-lg hover:opacity-95 transition-all"
+                      data-testid="btn-validate-signature"
+                    >
+                      {submitting ? (
+                        <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Validation…</>
+                      ) : (
+                        <><CheckCircle2 className="w-4 h-4 mr-2" /> Confirmer la signature</>
+                      )}
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
                     En validant, vous reconnaissez que cette signature électronique a la même valeur juridique qu'une signature manuscrite.
                     {isMulti && " Tous les documents listés seront signés simultanément."}
                   </p>
-                </>
-              )}
-            </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-card border border-border rounded-2xl p-6">
+                <div className="flex items-center gap-2 mb-1">
+                  <PenLine className="w-4 h-4 text-brand" strokeWidth={1.8} />
+                  <span className="text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground">Signature enregistrée</span>
+                </div>
+                <h3 className="font-display text-xl font-medium text-foreground mb-4">Document signé</h3>
+                <div className="flex items-center justify-center bg-emerald-500/5 rounded-xl border border-emerald-500/30 p-8">
+                  <CheckCircle2 className="w-12 h-12 text-emerald-500" strokeWidth={1.5} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </main>
