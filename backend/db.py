@@ -40,6 +40,10 @@ class File(Base):
     signed_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     signature_position: Mapped[str] = mapped_column(String(20), nullable=False, default="bottom-right")
     document_type: Mapped[str] = mapped_column(String(50), nullable=False, default="Devis", index=True)
+    # Sprint 2 additions
+    parent_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)  # linked docs
+    fields: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list of field defs
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # within group
 
 
 class DocumentType(Base):
@@ -60,7 +64,6 @@ async def init_db():
     """Create tables if they don't exist + run light migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Light migrations
         from sqlalchemy import text
         try:
             cols = await conn.execute(text("PRAGMA table_info(files)"))
@@ -72,6 +75,18 @@ async def init_db():
             if "document_type" not in col_names:
                 await conn.execute(text(
                     "ALTER TABLE files ADD COLUMN document_type VARCHAR(50) NOT NULL DEFAULT 'Devis'"
+                ))
+            if "parent_file_id" not in col_names:
+                await conn.execute(text(
+                    "ALTER TABLE files ADD COLUMN parent_file_id VARCHAR(36)"
+                ))
+            if "fields" not in col_names:
+                await conn.execute(text(
+                    "ALTER TABLE files ADD COLUMN fields TEXT"
+                ))
+            if "sort_order" not in col_names:
+                await conn.execute(text(
+                    "ALTER TABLE files ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
                 ))
         except Exception:
             pass
@@ -90,6 +105,11 @@ def user_to_dict(u: User, include_password: bool = False) -> dict:
 
 
 def file_to_dict(f: File, include_content: bool = False) -> dict:
+    import json as _json
+    fields_list = []
+    if f.fields:
+        try: fields_list = _json.loads(f.fields)
+        except Exception: fields_list = []
     d = {
         "id": f.id,
         "filename": f.filename,
@@ -102,6 +122,9 @@ def file_to_dict(f: File, include_content: bool = False) -> dict:
         "signed_at": f.signed_at,
         "signature_position": f.signature_position or "bottom-right",
         "document_type": f.document_type or "Devis",
+        "parent_file_id": f.parent_file_id,
+        "fields": fields_list,
+        "sort_order": f.sort_order or 0,
     }
     if include_content:
         d["content_b64"] = f.content_b64

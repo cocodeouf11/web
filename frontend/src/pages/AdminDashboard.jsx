@@ -20,7 +20,7 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
-  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X,
+  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
@@ -83,6 +83,10 @@ export default function AdminDashboard() {
   const [typesManagerOpen, setTypesManagerOpen] = useState(false);
   const [newTypeName, setNewTypeName] = useState("");
   const [newTypePos, setNewTypePos] = useState("bottom-right");
+  const [linkParent, setLinkParent] = useState(null);  // file to link a new doc to
+  const [linkType, setLinkType] = useState("Devis");
+  const [linkUploading, setLinkUploading] = useState(false);
+  const linkFileRef = useRef(null);
   const fileInputRef = useRef(null);
 
   const loadFiles = async () => {
@@ -300,6 +304,31 @@ export default function AdminDashboard() {
     const link = `${window.location.origin}/sign/${encodeURIComponent(file.access_code)}`;
     navigator.clipboard?.writeText(link).catch(() => {});
     toast.success("Lien direct copié", { description: link, duration: 6000 });
+  };
+
+  const handleLinkUpload = async (e) => {
+    e.preventDefault();
+    if (!linkParent) return;
+    const f = linkFileRef.current?.files?.[0];
+    if (!f) { toast.error("Sélectionnez un PDF"); return; }
+    if (!f.name.toLowerCase().endsWith(".pdf")) { toast.error("PDF uniquement"); return; }
+    setLinkUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("document_type", linkType);
+      fd.append("parent_id", linkParent.id);
+      await api.post("/files/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success(`Document lié : ${f.name}`, { description: `Type : ${linkType} · partagera le code de ${linkParent.filename}` });
+      if (linkFileRef.current) linkFileRef.current.value = "";
+      setLinkParent(null);
+      setLinkType("Devis");
+      await loadFiles();
+    } catch (err) {
+      toast.error(formatApiError(err.response?.data?.detail) || "Erreur");
+    } finally {
+      setLinkUploading(false);
+    }
   };
 
   const copyCode = (code) => {
@@ -605,6 +634,11 @@ export default function AdminDashboard() {
                                 {f.access_code && (
                                   <DropdownMenuItem onClick={() => copyDirectLink(f)} data-testid={`menu-link-${f.id}`}>
                                     <Link2 className="w-4 h-4 mr-2" /> Copier lien direct signataire
+                                  </DropdownMenuItem>
+                                )}
+                                {!f.parent_file_id && (
+                                  <DropdownMenuItem onClick={() => setLinkParent(f)} data-testid={`menu-link-doc-${f.id}`}>
+                                    <Paperclip className="w-4 h-4 mr-2" /> Lier un autre document
                                   </DropdownMenuItem>
                                 )}
                                 <DropdownMenuItem onClick={() => openTypeEdit(f)} data-testid={`menu-type-${f.id}`}>

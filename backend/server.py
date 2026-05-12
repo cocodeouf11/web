@@ -156,6 +156,23 @@ class FileTypeUpdate(BaseModel):
     document_type: str
 
 
+class FieldsUpdate(BaseModel):
+    """Update form fields for a file."""
+    fields: list  # list of dicts {name, label, type, page, x, y, width, height, required}
+
+
+class LinkFileInput(BaseModel):
+    """For linking an existing file (parent_id) when uploading a child."""
+    parent_id: Optional[str] = None
+
+
+class SignFullInput(BaseModel):
+    """Used for signing with form fields + signature."""
+    signature_data_url: Optional[str] = None
+    field_values: dict = {}  # {field_name: value}
+    fait_a: Optional[str] = None  # convenience field for attestation type
+
+
 VALID_POSITIONS = {
     "top-left", "top-center", "top-right",
     "middle-left", "middle-center", "middle-right",
@@ -272,6 +289,7 @@ async def update_me(payload: SelfUpdate, user=Depends(get_current_admin), db: As
 async def upload_file(
     file: UploadFile = UploadFileParam(...),
     document_type: str = Form("Devis"),
+    parent_id: Optional[str] = Form(None),
     user=Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -281,12 +299,31 @@ async def upload_file(
     if len(content) > MAX_PDF_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Fichier trop volumineux (max {MAX_PDF_SIZE_MB}MB)")
 
-    # Resolve document type and its default signature position
     doc_type_name = (document_type or "Devis").strip() or "Devis"
     default_pos = "bottom-right"
     type_row = (await db.execute(select(DocumentType).where(DocumentType.name == doc_type_name))).scalar_one_or_none()
     if type_row:
         default_pos = type_row.default_signature_position
+
+    parent_file = None
+    sort_order = 0
+    if parent_id:
+        parent_q = select(FileModel).where(FileModel.id == parent_id)
+        parent_q = _files_filter(parent_q, user)
+        parent_file = (await db.execute(parent_q)).scalar_one_or_none()
+        if not parent_file:
+            raise HTTPException(404, "Document parent introuvable")
+        # Use grandparent as actual parent if parent itself is a child
+        actual_parent_id = parent_file.parent_file_id or parent_file.id
+        existing_children = (await db.execute(
+            select(func.count()).select_from(FileModel).where(FileModel.parent_file_id == actual_parent_id)
+        )).scalar_one()
+        sort_order = existing_children + 1
+        parent_id = actual_parent_id
+
+    # Default fields preset for Attestation type
+    import json as _json
+    default_fields = _attestation_fields() if doc_type_name.lower() == "attestation" else []
 
     file_id = str(uuid.uuid4())
     new_file = FileModel(
@@ -303,10 +340,26 @@ async def upload_file(
         signed_content_b64=None,
         signature_position=default_pos,
         document_type=doc_type_name,
+        parent_file_id=parent_id,
+        fields=_json.dumps(default_fields) if default_fields else None,
+        sort_order=sort_order,
     )
     db.add(new_file)
     await db.commit()
     return file_to_dict(new_file)
+
+
+def _attestation_fields():
+    """Preset form fields for Attestation documents (page 1, approximate positions)."""
+    return [
+        {"name": "nom", "label": "Nom", "type": "text", "page": 1, "x": 220, "y": 650, "width": 280, "height": 18, "required": True},
+        {"name": "prenom", "label": "Prénom", "type": "text", "page": 1, "x": 220, "y": 620, "width": 280, "height": 18, "required": True},
+        {"name": "adresse", "label": "Adresse", "type": "text", "page": 1, "x": 220, "y": 590, "width": 340, "height": 18, "required": True},
+        {"name": "code_postal", "label": "Code postal", "type": "text", "page": 1, "x": 220, "y": 560, "width": 100, "height": 18, "required": True},
+        {"name": "commune", "label": "Commune", "type": "text", "page": 1, "x": 340, "y": 560, "width": 220, "height": 18, "required": True},
+        {"name": "fait_a", "label": "Fait à", "type": "text", "page": 1, "x": 220, "y": 200, "width": 220, "height": 18, "required": True},
+        {"name": "le_date", "label": "Le", "type": "date_auto", "page": 1, "x": 460, "y": 200, "width": 100, "height": 18, "required": False},
+    ]
 
 
 def _files_filter(query, user: dict):
@@ -426,13 +479,51 @@ async def update_document_type(
     if not f:
         raise HTTPException(404, "Fichier introuvable")
     f.document_type = new_type
-    # Apply the type's default position if the file is not signed yet and a type exists
     if f.status != "signed":
         type_row = (await db.execute(select(DocumentType).where(DocumentType.name == new_type))).scalar_one_or_none()
         if type_row:
             f.signature_position = type_row.default_signature_position
+        # Refresh attestation preset if user changes type to Attestation
+        import json as _json
+        if new_type.lower() == "attestation" and not f.fields:
+            f.fields = _json.dumps(_attestation_fields())
     await db.commit()
     return {"ok": True, "document_type": new_type, "signature_position": f.signature_position}
+
+
+@api_router.patch("/files/{file_id}/fields")
+async def update_file_fields(
+    file_id: str,
+    payload: FieldsUpdate,
+    user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update form-fields layout (positions, labels) for a file."""
+    import json as _json
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
+        raise HTTPException(404, "Fichier introuvable")
+    if f.status == "signed":
+        raise HTTPException(400, "Document déjà signé")
+    f.fields = _json.dumps(payload.fields)
+    await db.commit()
+    return {"ok": True, "count": len(payload.fields)}
+
+
+@api_router.get("/files/{file_id}/linked")
+async def list_linked(file_id: str, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    """List child documents linked to a parent (admin view)."""
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
+        raise HTTPException(404, "Fichier introuvable")
+    children_q = select(FileModel).where(FileModel.parent_file_id == file_id).order_by(FileModel.sort_order)
+    children_q = _files_filter(children_q, user)
+    children = (await db.execute(children_q)).scalars().all()
+    return [file_to_dict(c) for c in children]
 
 
 # ---------- Document Types (managed by any authenticated user, can be created by gestionnaires too) ----------
@@ -522,89 +613,197 @@ async def verify_code(payload: CodeVerify, db: AsyncSession = Depends(get_db)):
 
 @api_router.get("/access/file/{code}")
 async def get_file_by_code(code: str, db: AsyncSession = Depends(get_db)):
+    """Returns the parent file + all linked child files (sorted) for a given access code."""
     code = code.strip().upper()
     f = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
     if not f:
         raise HTTPException(404, "Code d'accès invalide")
-    content_b64 = f.signed_content_b64 if f.status == "signed" and f.signed_content_b64 else f.content_b64
-    return {"id": f.id, "filename": f.filename, "status": f.status, "content_b64": content_b64}
+    # Build the list: parent first, then children
+    children = (await db.execute(
+        select(FileModel).where(FileModel.parent_file_id == f.id).order_by(FileModel.sort_order)
+    )).scalars().all()
+    all_files = [f] + list(children)
+
+    def file_payload(file_obj):
+        content_b64 = file_obj.signed_content_b64 if file_obj.status == "signed" and file_obj.signed_content_b64 else file_obj.content_b64
+        d = file_to_dict(file_obj)
+        d["content_b64"] = content_b64
+        return d
+
+    return {
+        "id": f.id,
+        "filename": f.filename,
+        "status": f.status,
+        "documents": [file_payload(x) for x in all_files],
+        "all_signed": all(x.status == "signed" for x in all_files),
+    }
 
 
 def _embed_signature_in_pdf(pdf_bytes: bytes, signature_png_bytes: bytes, position: str = "bottom-right") -> bytes:
+    return _build_overlay_pdf(pdf_bytes, signature_png_bytes=signature_png_bytes, position=position)
+
+
+def _draw_text_field(c, x, y, width, value, font_size=10):
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    c.setFont("Helvetica", font_size)
+    c.setFillColorRGB(0, 0, 0)
+    # Truncate if too long
+    txt = str(value or "")
+    while txt and stringWidth(txt, "Helvetica", font_size) > width:
+        txt = txt[:-1]
+    c.drawString(x, y, txt)
+
+
+def _build_overlay_pdf(pdf_bytes: bytes, signature_png_bytes: bytes = None, position: str = "bottom-right",
+                       fields: list = None, field_values: dict = None) -> bytes:
+    """Build an overlay that embeds the signature image AND draws text fields on relevant pages."""
+    import json as _json
     reader = PdfReader(io.BytesIO(pdf_bytes))
     writer = PdfWriter()
-    last_page = reader.pages[-1]
-    media = last_page.mediabox
-    width = float(media.width); height = float(media.height)
-    sig_img = Image.open(io.BytesIO(signature_png_bytes)).convert("RGBA")
-    sig_w, sig_h = sig_img.size
-    target_w = min(220.0, width * 0.4)
-    aspect = sig_h / sig_w if sig_w else 1
-    target_h = target_w * aspect
+    fields = fields or []
+    field_values = field_values or {}
+    num_pages = len(reader.pages)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    margin = 36.0
-    parts = position.split("-") if "-" in position else ["bottom", "right"]
-    v_pos = parts[0]  # top, middle, bottom
-    h_pos = parts[1]  # left, center, right
+    # Sort fields by page
+    fields_by_page = {}
+    for fd in fields:
+        page_idx = max(0, int(fd.get("page", 1)) - 1)
+        fields_by_page.setdefault(page_idx, []).append(fd)
 
-    # Horizontal
-    if h_pos == "left":
-        x = margin
-    elif h_pos == "center":
-        x = (width - target_w) / 2
-    else:  # right
-        x = width - target_w - margin
-    # Vertical (PDF coordinates: 0 = bottom)
-    if v_pos == "top":
-        y = height - target_h - margin
-    elif v_pos == "middle":
-        y = (height - target_h) / 2
-    else:  # bottom
-        y = margin
+    # Determine on which page to place the signature
+    # If a field of type "signature" is provided, use it; otherwise place on last page using `position`
+    sig_field = None
+    for fd in fields:
+        if fd.get("type") == "signature":
+            sig_field = fd
+            break
 
-    overlay_buf = io.BytesIO()
-    c = rl_canvas.Canvas(overlay_buf, pagesize=(width, height))
-    c.drawImage(ImageReader(sig_img), x, y, width=target_w, height=target_h, mask='auto')
-    c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
-    label_y = y - 10 if v_pos != "top" else y + target_h + 4
-    c.drawString(x, label_y, f"Signé le {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    c.save()
-    overlay_reader = PdfReader(io.BytesIO(overlay_buf.getvalue()))
-    overlay_page = overlay_reader.pages[0]
+    sig_img = None
+    if signature_png_bytes:
+        sig_img = Image.open(io.BytesIO(signature_png_bytes)).convert("RGBA")
+
     for i, page in enumerate(reader.pages):
-        if i == len(reader.pages) - 1:
-            page.merge_page(overlay_page)
+        media = page.mediabox
+        width = float(media.width); height = float(media.height)
+        overlay_buf = io.BytesIO()
+        c = rl_canvas.Canvas(overlay_buf, pagesize=(width, height))
+
+        # Draw text fields on this page
+        for fd in fields_by_page.get(i, []):
+            if fd.get("type") == "signature":
+                continue
+            name = fd.get("name")
+            value = field_values.get(name, "")
+            if fd.get("type") == "date_auto":
+                value = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+            x = float(fd.get("x", 100))
+            y = float(fd.get("y", 100))
+            w = float(fd.get("width", 200))
+            _draw_text_field(c, x, y, w, value, font_size=10)
+
+        # Draw signature
+        place_sig_here = False
+        if sig_img is not None:
+            if sig_field is not None and i == max(0, int(sig_field.get("page", 1)) - 1):
+                place_sig_here = True
+                # Use the field's x/y/width/height
+                target_w = float(sig_field.get("width", 220))
+                sw, sh = sig_img.size
+                aspect = sh / sw if sw else 1
+                target_h = float(sig_field.get("height", target_w * aspect))
+                x = float(sig_field.get("x", width - target_w - 36))
+                y = float(sig_field.get("y", 36))
+                c.drawImage(ImageReader(sig_img), x, y, width=target_w, height=target_h, mask='auto')
+                c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
+                c.drawString(x, y - 10, f"Signé le {timestamp}")
+            elif sig_field is None and i == num_pages - 1:
+                # Fallback: use position (9-pos system) on last page
+                sw, sh = sig_img.size
+                target_w = min(220.0, width * 0.4)
+                aspect = sh / sw if sw else 1
+                target_h = target_w * aspect
+                parts = position.split("-") if "-" in position else ["bottom", "right"]
+                v_pos = parts[0]; h_pos = parts[1]
+                margin = 36.0
+                if h_pos == "left": x = margin
+                elif h_pos == "center": x = (width - target_w) / 2
+                else: x = width - target_w - margin
+                if v_pos == "top": y = height - target_h - margin
+                elif v_pos == "middle": y = (height - target_h) / 2
+                else: y = margin
+                c.drawImage(ImageReader(sig_img), x, y, width=target_w, height=target_h, mask='auto')
+                c.setFont("Helvetica", 8); c.setFillColorRGB(0.4, 0.4, 0.4)
+                label_y = y - 10 if v_pos != "top" else y + target_h + 4
+                c.drawString(x, label_y, f"Signé le {timestamp}")
+
+        c.save()
+        overlay_reader = PdfReader(io.BytesIO(overlay_buf.getvalue()))
+        overlay_page = overlay_reader.pages[0]
+        page.merge_page(overlay_page)
         writer.add_page(page)
+
     out = io.BytesIO(); writer.write(out)
     return out.getvalue()
 
 
 @api_router.post("/access/sign/{code}")
-async def sign_file(code: str, payload: SignInput, db: AsyncSession = Depends(get_db)):
+async def sign_files(code: str, payload: SignFullInput, db: AsyncSession = Depends(get_db)):
+    """Sign all files linked to this code in one transaction."""
+    import json as _json
     code = code.strip().upper()
-    f = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
-    if not f:
+    parent = (await db.execute(select(FileModel).where(FileModel.access_code == code))).scalar_one_or_none()
+    if not parent:
         raise HTTPException(404, "Code d'accès invalide")
-    if f.status == "signed":
-        raise HTTPException(400, "Ce document a déjà été signé")
-    if "," not in payload.signature_data_url:
-        raise HTTPException(400, "Signature invalide")
-    _, b64 = payload.signature_data_url.split(",", 1)
-    try:
-        sig_bytes = base64.b64decode(b64)
-    except Exception:
-        raise HTTPException(400, "Signature invalide")
-    pdf_bytes = base64.b64decode(f.content_b64)
-    try:
-        signed_pdf = _embed_signature_in_pdf(pdf_bytes, sig_bytes, f.signature_position or "bottom-right")
-    except Exception as e:
-        logger.exception("Erreur signature")
-        raise HTTPException(500, f"Erreur lors de la signature: {e}")
-    f.signed_content_b64 = base64.b64encode(signed_pdf).decode("utf-8")
-    f.status = "signed"
-    f.signed_at = datetime.now(timezone.utc).isoformat()
+
+    children = (await db.execute(
+        select(FileModel).where(FileModel.parent_file_id == parent.id).order_by(FileModel.sort_order)
+    )).scalars().all()
+    all_files = [parent] + list(children)
+
+    if all(x.status == "signed" for x in all_files):
+        raise HTTPException(400, "Tous les documents ont déjà été signés")
+
+    # Parse signature image (if provided)
+    sig_bytes = None
+    if payload.signature_data_url:
+        if "," not in payload.signature_data_url:
+            raise HTTPException(400, "Signature invalide")
+        _, b64 = payload.signature_data_url.split(",", 1)
+        try:
+            sig_bytes = base64.b64decode(b64)
+        except Exception:
+            raise HTTPException(400, "Signature invalide")
+
+    # Inject fait_a into field_values dict for convenience
+    field_values = dict(payload.field_values or {})
+    if payload.fait_a and "fait_a" not in field_values:
+        field_values["fait_a"] = payload.fait_a
+
+    now = datetime.now(timezone.utc).isoformat()
+    for f in all_files:
+        if f.status == "signed":
+            continue
+        try:
+            fields_list = _json.loads(f.fields) if f.fields else []
+        except Exception:
+            fields_list = []
+        pdf_bytes = base64.b64decode(f.content_b64)
+        try:
+            signed_pdf = _build_overlay_pdf(
+                pdf_bytes, signature_png_bytes=sig_bytes,
+                position=f.signature_position or "bottom-right",
+                fields=fields_list, field_values=field_values,
+            )
+        except Exception as e:
+            logger.exception(f"Erreur signature {f.id}")
+            raise HTTPException(500, f"Erreur lors de la signature: {e}")
+        f.signed_content_b64 = base64.b64encode(signed_pdf).decode("utf-8")
+        f.status = "signed"
+        f.signed_at = now
+
     await db.commit()
-    return {"ok": True, "status": "signed", "signed_at": f.signed_at}
+    return {"ok": True, "status": "signed", "signed_at": now, "documents_signed": len(all_files)}
 
 
 # ---------- Health ----------
